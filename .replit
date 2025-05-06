@@ -1,0 +1,9 @@
+modules = ["nodejs-20"]
+run = "npm run watch"
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+run = ["sh", "-c", "node build/index.js"]
+build = ["sh", "-c", "npm run build"]
