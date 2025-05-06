@@ -63,5 +63,7 @@ export declare class TitanMemoryModel implements IMemoryModel {
         attentionOutputWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
         hierarchicalMemory: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
     };
+    train_sequence(sequence: ITensor[], epochs?: number): number[];
+    private zeroVector;
 }
 export {};

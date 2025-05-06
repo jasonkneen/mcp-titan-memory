@@ -1,14 +1,9 @@
+/**
+ * This file is deprecated. All server functionality has been consolidated
+ * into the MCP server implementation in index.ts.
+ *
+ * This stub remains only for backward compatibility references.
+ */
 export declare class TitanExpressServer {
-    private app;
-    private server;
-    private model;
-    private memoryVec;
-    private port;
-    private wss;
-    constructor(port?: number);
-    private setupMiddleware;
-    private setupRoutes;
-    private setupWebSocket;
-    start(): Promise<void>;
-    stop(): Promise<void>;
+    constructor();
 }
