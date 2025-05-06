@@ -5,7 +5,7 @@ run = "npm run watch"
 channel = "stable-24_05"
 
 [deployment]
-run = ["sh", "-c", "node build/index.js"]
+run = ["sh", "-c", "npm run start"]
 build = ["sh", "-c", "npm run build"]
 
 [workflows]
@@ -13,6 +13,15 @@ runButton = "Development"
 
 [[workflows.workflow]]
 name = "Development"
+author = 17680578
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run watch"
+
+[[workflows.workflow]]
+name = "Watch Mode"
 author = 17680578
 mode = "sequential"
 

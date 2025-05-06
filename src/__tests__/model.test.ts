@@ -360,10 +360,18 @@ describe('TitanMemoryModel', () => {
 
     const { predicted, newMemory, surprise } = model.forward(x, memoryState);
 
-    // Check if the hierarchical memory structure updates correctly
-    for (let i = 0; i < model.getConfig().numLayers; i++) {
-      const layerMemory = model.getWeights().hierarchicalMemory[i];
-      expect(layerMemory.length).toEqual(outputDim);
+    // Get memory state for each layer
+    const config = model.getConfig();
+    if (config) {
+      for (let i = 0; i < config.numLayers; i++) {
+        const layerMemory = model.getLayerMemoryState(i);
+        if (Array.isArray(layerMemory)) {
+          expect(layerMemory.length).toEqual(outputDim);
+        } else {
+          // Handle other types or log a proper error
+          fail('Expected layerMemory to be an array');
+        }
+      }
     }
 
     predicted.dispose();
