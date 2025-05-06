@@ -109,22 +109,24 @@ export class TitanMemoryModel implements IMemoryModel {
   }
 
   private multiHeadAttention(query: tf.Tensor, key: tf.Tensor, value: tf.Tensor): tf.Tensor {
-    const attentionHeads = [];
-    for (let i = 0; i < this.numHeads; i++) {
-      const q = tf.matMul(query, this.queryWeights[i]);
-      const k = tf.matMul(key, this.keyWeights[i]);
-      const v = tf.matMul(value, this.valueWeights[i]);
+    return tf.tidy(() => {
+      const attentionHeads = [];
+      for (let i = 0; i < this.numHeads; i++) {
+        const q = tf.matMul(query, this.queryWeights[i]);
+        const k = tf.matMul(key, this.keyWeights[i]);
+        const v = tf.matMul(value, this.valueWeights[i]);
 
-      const attentionScores = tf.softmax(tf.matMul(q, k.transpose()).div(tf.scalar(Math.sqrt(this.memoryDim))));
-      const attentionOutput = tf.matMul(attentionScores, v);
+        const attentionScores = tf.softmax(tf.matMul(q, k.transpose()).div(tf.scalar(Math.sqrt(this.memoryDim))));
+        const attentionOutput = tf.matMul(attentionScores, v);
 
-      attentionHeads.push(attentionOutput);
-    }
+        attentionHeads.push(attentionOutput);
+      }
 
-    const concatenatedHeads = tf.concat(attentionHeads, -1);
-    const output = tf.matMul(concatenatedHeads, this.attentionOutputWeights[0]);
+      const concatenatedHeads = tf.concat(attentionHeads, -1);
+      const output = tf.matMul(concatenatedHeads, this.attentionOutputWeights[0]);
 
-    return output;
+      return output;
+    });
   }
 
   public forward(xTensor: ITensor, memoryState: ITensor): ForwardResult {
@@ -361,7 +363,8 @@ export class TitanMemoryModel implements IMemoryModel {
     }
   }
 
-  private zeroVector(dim: number): ITensor {
-    return wrapTensor(tf.zeros([dim]));
+  private zeroVector(dim: number | undefined): ITensor {
+    const dimension = dim || this.memoryDim;  // Default to memoryDim if dim is undefined
+    return wrapTensor(tf.zeros([dimension]));
   }
 }
