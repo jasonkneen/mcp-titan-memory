@@ -1,4 +1,3 @@
-
 # Titan Memory Server
 
 A Model Context Protocol (MCP) server implementation with an enhanced Titan Memory model.
@@ -9,17 +8,20 @@ This project implements a memory model for large language models (LLMs) that is 
 
 ## Features
 
-Current implementation includes:
-- Multi-head attention mechanism for improved memory focus
-- Basic hierarchical memory structure for organizing information
-- Manifold operations for geometric memory representation
-- Surprise-based memory updates to focus on unexpected information
-- TensorFlow.js backend for efficient tensor operations
+Currently implemented:
+- Multi-head attention mechanism
+- Basic hierarchical memory structure
+- Memory state persistence
+- Integration with Model Context Protocol (MCP)
+
+In development:
+- Memory replay for enhanced learning
+- LLM Cache integration
+- Dynamic memory allocation
 
 Planned features:
-- Enhanced contextual memory updates
-- Memory replay mechanism
-- Dynamic memory allocation
+- Long-term memory storage
+- Advanced memory compression
 
 ## Usage
 

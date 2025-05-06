@@ -177,7 +177,6 @@ export class TitanMemoryModel implements IMemoryModel {
         this.hierarchicalMemory[i].assign(updatedLayerMemory);
       }
 
-
       return {
         predicted: wrapTensor(predicted),
         newMemory: wrapTensor(newMemory),
@@ -326,18 +325,10 @@ export class TitanMemoryModel implements IMemoryModel {
   }
 
   public getLayerMemoryState(layerIndex: number): number[] {
-    // This is a stub implementation that returns a slice of the memory
-    // In a full implementation, this would return the actual hierarchical memory state
     if (layerIndex < 0 || layerIndex >= this.numLayers) {
-      throw new Error(`Invalid layer index: ${layerIndex}. Valid range is 0-${this.numLayers -1}`);
+      throw new Error(`Layer index out of bounds: ${layerIndex}`);
     }
-
-    // Create a mock layer memory by dividing the memory vector
-    const start = layerIndex * Math.floor(this.memoryDim / this.numLayers);
-    const end = (layerIndex + 1) * Math.floor(this.memoryDim / this.numLayers);
-
-    // Return a portion of the memory as an array
-    return Array.from(this.hierarchicalMemory[layerIndex].dataSync()).slice(start, end);
+    return this.hierarchicalMemory[layerIndex].arraySync();
   }
 
 
