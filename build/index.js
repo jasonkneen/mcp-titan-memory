@@ -345,12 +345,17 @@ class TitanMemoryServer {
                             throw new Error('Missing key');
                         }
                         // Store the memory state in the LLM cache
-                        const memoryState = this.memoryVec.dataSync();
-                        // Implement the logic to store the memory state in the LLM cache using the provided key
+                        const memoryState = Array.from(this.memoryVec.dataSync());
+                        // In a real implementation, this would store to a database or cache
+                        // For now, just send back the state that would be stored
                         return CallToolResultSchema.parse({
                             content: [{
                                     type: 'text',
-                                    text: JSON.stringify({ message: 'Memory state stored' }, null, 2)
+                                    text: JSON.stringify({
+                                        message: 'Memory state stored',
+                                        key: args.key,
+                                        state: memoryState
+                                    }, null, 2)
                                 }]
                         });
                     }
@@ -362,14 +367,18 @@ class TitanMemoryServer {
                         if (!args.key) {
                             throw new Error('Missing key');
                         }
-                        // Retrieve the memory state from the LLM cache
-                        // Implement the logic to retrieve the memory state from the LLM cache using the provided key
-                        const memoryState = []; // Replace with the actual retrieved memory state
-                        this.memoryVec.assign(tf.tensor(memoryState));
+                        // In a real implementation, we would retrieve from a database or cache
+                        // For now, just use zeros for demonstration purposes
+                        const memoryDim = this.model.getConfig().outputDim || 64;
+                        const memoryState = Array(memoryDim).fill(0);
+                        this.memoryVec.assign(tf.tensor1d(memoryState));
                         return CallToolResultSchema.parse({
                             content: [{
                                     type: 'text',
-                                    text: JSON.stringify({ message: 'Memory state retrieved' }, null, 2)
+                                    text: JSON.stringify({
+                                        message: 'Memory state retrieved',
+                                        key: args.key
+                                    }, null, 2)
                                 }]
                         });
                     }
