@@ -208,9 +208,9 @@ export class TitanExpressServer {
   private setupWebSocket() {
     this.wss = new WebSocket.Server({ port: this.port + 1 });
 
-    this.wss.on('connection', (ws) => {
-      ws.on('message', (message) => {
-        const data = JSON.parse(message.toString());
+    this.wss.on('connection', (ws: WebSocket) => {
+      ws.addEventListener('message', (event) => {
+        const data = JSON.parse(event.data.toString());
         const { action, payload } = data;
 
         switch (action) {
@@ -247,6 +247,10 @@ export class TitanExpressServer {
           default:
             ws.send(JSON.stringify({ error: 'Unknown action' }));
         }
+      });
+      
+      ws.addEventListener('error', (error) => {
+        console.error('WebSocket error:', error);
       });
     });
   }

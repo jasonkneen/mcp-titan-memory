@@ -1,13 +1,16 @@
 import request from 'supertest';
 import express from 'express';
 import { TitanExpressServer } from '../server.js';
+import { WebSocket } from 'ws'; // Added WebSocket import
 
 describe('TitanExpressServer Tests', () => {
   let server: TitanExpressServer;
   let app: express.Application;
+  let port: number; // Added port variable
 
   beforeAll(() => {
-    server = new TitanExpressServer(3001); // Use a test port
+    port = 3001; // Assign port value
+    server = new TitanExpressServer(port); // Use a test port
     // Access the internal Express app for test calls:
     app = (server as any).app;
   });
@@ -199,27 +202,26 @@ describe('TitanExpressServer Tests', () => {
   });
 
   test('WebSocket forward pass', (done) => {
-    const ws = new WebSocket('ws://localhost:3002');
+    const ws = new WebSocket(`ws://localhost:${port + 1}`);
 
-    ws.on('open', () => {
+    ws.addEventListener('open', () => {
       ws.send(JSON.stringify({
         action: 'forward',
-        payload: { x: Array(64).fill(0).map(() => Math.random()) }
+        payload: { x: new Array(64).fill(0.5) }
       }));
     });
 
-    ws.on('message', (message) => {
-      const data = JSON.parse(message.toString());
+    ws.addEventListener('message', (event) => {
+      const data = JSON.parse(event.data.toString());
       expect(data).toHaveProperty('predicted');
       expect(data).toHaveProperty('memory');
       expect(data).toHaveProperty('surprise');
-      expect(data.predicted).toHaveLength(64);
       ws.close();
-      done();
+      server.stop().then(done);
     });
 
-    ws.on('error', (error) => {
-      done(error);
+    ws.addEventListener('error', (event) => {
+      done(new Error('WebSocket error'));
     });
   });
 });

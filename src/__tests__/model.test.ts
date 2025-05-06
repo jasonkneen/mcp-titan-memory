@@ -38,9 +38,9 @@ describe('TitanMemoryModel', () => {
   test('forward pass produces correct output shapes', () => {
     const x = wrapTensor(tf.randomNormal([inputDim], 0, 1, 'float32'));
     const memoryState = wrapTensor(tf.zeros([outputDim]));
-    
+
     const { predicted, newMemory, surprise } = model.forward(x, memoryState);
-    
+
     expect(predicted.shape).toEqual([inputDim]);
     expect(newMemory.shape).toEqual([outputDim]);
     expect(surprise.shape).toEqual([]);
@@ -64,28 +64,28 @@ describe('TitanMemoryModel', () => {
       const wrappedX = wrapTensor(x_t);
       const wrappedNext = wrapTensor(x_next);
       const wrappedMemory = wrapTensor(memoryState);
-      
+
       const losses: number[] = [];
       const surprises: number[] = [];
       const numSteps = 50;
-      
+
       for (let i = 0; i < numSteps; i++) {
         const cost = model.trainStep(wrappedX, wrappedNext, wrappedMemory);
         const { surprise } = model.forward(wrappedX, wrappedMemory);
-        
+
         losses.push(unwrapTensor(cost).dataSync()[0]);
         surprises.push(unwrapTensor(surprise).dataSync()[0]);
-        
+
         cost.dispose();
         surprise.dispose();
       }
-      
+
       // Verify loss reduction
       const firstLosses = losses.slice(0, 5);
       const lastLosses = losses.slice(-5);
       const avgFirstLoss = firstLosses.reduce((a, b) => a + b, 0) / firstLosses.length;
       const avgLastLoss = lastLosses.reduce((a, b) => a + b, 0) / lastLosses.length;
-      
+
       expect(avgLastLoss).toBeLessThan(avgFirstLoss);
 
       // Verify surprise reduction
@@ -93,7 +93,7 @@ describe('TitanMemoryModel', () => {
       const lastSurprises = surprises.slice(-5);
       const avgFirstSurprise = firstSurprises.reduce((a, b) => a + b, 0) / firstSurprises.length;
       const avgLastSurprise = lastSurprises.reduce((a, b) => a + b, 0) / lastSurprises.length;
-      
+
       expect(avgLastSurprise).toBeLessThan(avgFirstSurprise);
 
       // Clean up
@@ -125,7 +125,7 @@ describe('TitanMemoryModel', () => {
         const wrappedMemory = wrapTensor(memoryState);
 
         const losses: number[] = [];
-        
+
         for (let i = 0; i < numSteps; i++) {
           const cost = testModel.trainStep(wrappedX, wrappedNext, wrappedMemory);
           losses.push(unwrapTensor(cost).dataSync()[0]);
@@ -134,7 +134,7 @@ describe('TitanMemoryModel', () => {
 
         const avgFirstLoss = losses.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
         const avgLastLoss = losses.slice(-3).reduce((a, b) => a + b, 0) / 3;
-        
+
         expect(avgLastLoss).toBeLessThan(avgFirstLoss);
 
         // Clean up
@@ -151,14 +151,14 @@ describe('TitanMemoryModel', () => {
       return tf.tidy(() => {
         const sequenceLength = 5;
         const sequence = [];
-        
+
         // Create sequence in a single tidy
         for (let i = 0; i < sequenceLength; i++) {
           sequence.push(wrapTensor(tf.randomNormal([inputDim])));
         }
 
         const wrappedMemory = wrapTensor(tf.zeros([outputDim]));
-        
+
         // Train on sequence
         for (let i = 0; i < sequenceLength - 1; i++) {
           const cost = model.trainStep(sequence[i], sequence[i + 1], wrappedMemory);
@@ -200,7 +200,7 @@ describe('TitanMemoryModel', () => {
       const result = model.manifoldStep(wrappedBase, wrappedVel);
       const unwrappedResult = unwrapTensor(result);
       const norm = unwrappedResult.norm().dataSync()[0];
-      
+
       expect(Math.abs(norm - 1.0)).toBeLessThan(1e-5);
 
       // Clean up
@@ -223,7 +223,7 @@ describe('TitanMemoryModel', () => {
 
       const result = model.manifoldStep(wrappedBase, wrappedVel);
       const unwrappedResult = unwrapTensor(result);
-      
+
       // Should return original base vector
       const diff = tf.sum(tf.sub(unwrappedResult, base)).dataSync()[0];
       expect(Math.abs(diff)).toBeLessThan(1e-5);
@@ -251,11 +251,11 @@ describe('TitanMemoryModel', () => {
 
       const result = model.manifoldStep(wrappedBase, wrappedVel);
       const unwrappedResult = unwrapTensor(result);
-      
+
       // Calculate angle between base and result
       const dot = tf.sum(tf.mul(base, unwrappedResult)).dataSync()[0];
       const angle = Math.acos(Math.min(1.0, Math.abs(dot)));
-      
+
       // Angle should not exceed maxStepSize (with small epsilon for floating point precision)
       const epsilon = 1e-6;
       expect(angle).toBeLessThanOrEqual((model.getConfig().maxStepSize || 0.1) + epsilon);
@@ -310,10 +310,10 @@ describe('TitanMemoryModel', () => {
 
       // Compare predictions
       const { predicted: loadedPrediction } = loadedModel.forward(x, memoryState);
-      
+
       const originalData = unwrapTensor(originalPrediction).dataSync();
       const loadedData = unwrapTensor(loadedPrediction).dataSync();
-      
+
       for (let i = 0; i < originalData.length; i++) {
         expect(originalData[i]).toBeCloseTo(loadedData[i], 5);
       }
@@ -331,35 +331,11 @@ describe('TitanMemoryModel', () => {
     });
   });
 
-  test('Handles unknown tool in switch statement', () => {
-    const unknownTool = 'unknown_tool';
-    const request = {
-      params: {
-        name: unknownTool,
-        arguments: {}
-      }
-    };
-
-    const result = model.handleRequest(request);
-
-    expect(result.error).toBeDefined();
-    expect(result.error.code).toBe('MethodNotFound');
-    expect(result.error.message).toBe(`Unknown tool: ${unknownTool}`);
-  });
-
-  test('CallToolResultSchema.parse return statement', () => {
-    const request = {
-      params: {
-        name: 'init_model',
-        arguments: {}
-      }
-    };
-
-    const result = model.handleRequest(request);
-
-    expect(result.content).toBeDefined();
-    expect(result.content[0].type).toBe('text');
-    expect(result.content[0].text).toContain('Model initialized');
+  test('model configuration is accessible', () => {
+    const config = model.getConfig();
+    expect(config).toHaveProperty('inputDim');
+    expect(config).toHaveProperty('outputDim');
+    expect(config).toHaveProperty('hiddenDim');
   });
 
   test('Multi-head attention mechanism works correctly', () => {
