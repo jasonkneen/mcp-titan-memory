@@ -64,10 +64,12 @@ export class TitanMemoryModel {
         return tf.tidy(() => {
             const x = unwrapTensor(xTensor); // shape [inputDim]
             const memory = unwrapTensor(memoryState); // shape [memoryDim]
-            // Gate the memory state
-            const forgetVal = this.forgetGate; // shape []
-            const one = tf.scalar(1.0);
-            const gatedMemory = tf.mul(memory, tf.sub(one, forgetVal)); // shape [memoryDim]
+            // Gate the memory state - wrap in tidy to ensure cleanup
+            const gatedMemory = tf.tidy(() => {
+                const forgetVal = this.forgetGate; // shape []
+                const one = tf.scalar(1.0);
+                return tf.mul(memory, tf.sub(one, forgetVal)); // shape [memoryDim]
+            });
             // Combine input and gated memory => shape [inputDim + memoryDim]
             const combined = tf.concat([x, gatedMemory], 0);
             const combinedReshaped = combined.reshape([1, this.inputDim + this.memoryDim]);
@@ -236,7 +238,8 @@ export class TitanMemoryModel {
         if (layerIndex < 0 || layerIndex >= this.numLayers) {
             throw new Error(`Layer index out of bounds: ${layerIndex}`);
         }
-        return this.hierarchicalMemory[layerIndex].arraySync();
+        // Ensure proper conversion to number[]
+        return Array.from(this.hierarchicalMemory[layerIndex].dataSync());
     }
     train_sequence(sequence, epochs = 1) {
         const costs = [];
@@ -271,9 +274,7 @@ export class TitanMemoryModel {
             throw error;
         }
         finally {
-            // Force garbage collection
-            tf.disposeVariables();
-            // Report memory stats in debug mode
+            // Only report memory stats in debug mode
             if (process.env.DEBUG) {
                 console.log('TensorFlow memory stats:', tf.memory());
             }

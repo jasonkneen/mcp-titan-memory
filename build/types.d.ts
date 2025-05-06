@@ -67,6 +67,7 @@ export interface TitanMemoryConfig {
     inputDim?: number;
     hiddenDim?: number;
     memoryDim?: number;
+    outputDim?: number;
     learningRate?: number;
     useAttention?: boolean;
     useManifold?: boolean;
@@ -74,4 +75,6 @@ export interface TitanMemoryConfig {
     maxStepSize?: number;
     tangentEpsilon?: number;
     numLayers?: number;
+    momentumFactor?: number;
+    forgetGateInit?: number;
 }
