@@ -1,476 +1,414 @@
 #!/usr/bin/env node
-import '@tensorflow/tfjs-node';  // Import and register the Node.js backend
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  CallToolResultSchema,
-  ErrorCode
-} from '@modelcontextprotocol/sdk/types.js';
-import * as tf from '@tensorflow/tfjs';
+import '@tensorflow/tfjs-node';
+import { createMCPServer, Tool, CallToolParams, CallToolResultSchema } from '@modelcontextprotocol/sdk';
+import { z } from 'zod';
 import { TitanMemoryModel } from './model.js';
-import { wrapTensor, unwrapTensor } from './types.js';
+import * as tf from '@tensorflow/tfjs';
+import { wrapTensor } from './types.js';
 
-class TitanMemoryServer {
-  private server: Server;
-  private model: TitanMemoryModel | null = null;
-  private memoryVec: tf.Variable | null = null;
+// Memory cache for storing model states
+const LLM_CACHE: Record<string, number[]> = {};
 
-  constructor() {
-    // Initialize MCP server metadata
-    this.server = new Server(
-      {
-        name: 'titan-memory-server',
-        version: '0.1.0',
-      },
-      {
-        capabilities: {
-          tools: {
-            init_model: {
-              name: 'init_model',
-              description: 'Initialize the Titan Memory model with optional configuration.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  inputDim: {
-                    type: 'number',
-                    description: 'Input dimension (default: 64)'
-                  },
-                  outputDim: {
-                    type: 'number',
-                    description: 'Output/Memory dimension (default: 64)'
-                  }
-                }
-              }
-            },
-            train_step: {
-              name: 'train_step',
-              description: 'Perform a single training step with current and next state vectors.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  x_t: {
-                    type: 'array',
-                    items: { type: 'number' },
-                    description: 'Current state vector'
-                  },
-                  x_next: {
-                    type: 'array',
-                    items: { type: 'number' },
-                    description: 'Next state vector'
-                  }
-                },
-                required: ['x_t', 'x_next']
-              }
-            },
-            forward_pass: {
-              name: 'forward_pass',
-              description: 'Run a forward pass through the model with an input vector.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  x: {
-                    type: 'array',
-                    items: { type: 'number' },
-                    description: 'Input vector'
-                  }
-                },
-                required: ['x']
-              }
-            },
-            save_model: {
-              name: 'save_model',
-              description: 'Save the model to a specified path.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'string',
-                    description: 'Path to save the model'
-                  }
-                },
-                required: ['path']
-              }
-            },
-            load_model: {
-              name: 'load_model',
-              description: 'Load the model from a specified path.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'string',
-                    description: 'Path to load the model from'
-                  }
-                },
-                required: ['path']
-              }
-            },
-            get_status: {
-              name: 'get_status',
-              description: 'Get current model status and configuration.',
-              parameters: {
-                type: 'object',
-                properties: {}
-              }
-            },
-            train_sequence: {
-              name: 'train_sequence',
-              description: 'Train the model on a sequence of vectors.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  sequence: {
-                    type: 'array',
-                    items: {
-                      type: 'array',
-                      items: { type: 'number' }
-                    },
-                    description: 'Sequence of vectors to train on'
-                  }
-                },
-                required: ['sequence']
-              }
-            },
-            store_memory_state: {
-              name: 'store_memory_state',
-              description: 'Store the current memory state in the LLM cache.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  key: {
-                    type: 'string',
-                    description: 'Key to store the memory state under'
-                  }
-                },
-                required: ['key']
-              }
-            },
-            retrieve_memory_state: {
-              name: 'retrieve_memory_state',
-              description: 'Retrieve a memory state from the LLM cache.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  key: {
-                    type: 'string',
-                    description: 'Key to retrieve the memory state from'
-                  }
-                },
-                required: ['key']
-              }
-            }
-          },
-        },
+// Initialize with null model
+let model: TitanMemoryModel | null = null;
+let memoryVec: tf.Variable | null = null;
+
+// Initialize the model with configuration
+const initModelTool: Tool = {
+  name: 'init_model',
+  description: 'Initialize the Titan memory model with the given configuration',
+  parameters: z.object({
+    inputDim: z.number().optional(),
+    hiddenDim: z.number().optional(),
+    outputDim: z.number().optional(),
+    learningRate: z.number().optional(),
+    numLayers: z.number().optional(),
+    useAttention: z.boolean().optional(),
+    useManifold: z.boolean().optional(),
+  }),
+  execute: async (params: CallToolParams) => {
+    try {
+      const config = params.arguments || {};
+
+      // Initialize the model
+      model = new TitanMemoryModel(config);
+
+      // Initialize memory vector
+      if (memoryVec) {
+        memoryVec.dispose();
       }
-    );
+      const memDim = model.getConfig().outputDim || 64; // Memory dimension
+      memoryVec = tf.variable(tf.zeros([memDim]));
 
-    this.setupToolHandlers();
-    
-    // Error handling
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
-    process.on('SIGINT', async () => {
-      await this.cleanup();
-      process.exit(0);
-    });
-  }
-
-  private setupToolHandlers() {
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      try {
-        switch (request.params.name) {
-          case 'init_model': {
-            const config = request.params.arguments || {};
-            this.model = new TitanMemoryModel(config);
-
-            if (this.memoryVec) {
-              this.memoryVec.dispose();
-            }
-            const memDim = this.model.getConfig().outputDim || 64;
-            this.memoryVec = tf.variable(tf.zeros([memDim]));
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  message: 'Model initialized',
-                  config: this.model.getConfig()
-                }, null, 2)
-              }]
-            });
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: `Model initialized with config: ${JSON.stringify(model.getConfig())}`
           }
-
-          case 'train_step': {
-            if (!this.model || !this.memoryVec) {
-              throw new Error('Model not initialized');
-            }
-
-            const args = request.params.arguments as { x_t?: number[], x_next?: number[] };
-            if (!args.x_t || !args.x_next) {
-              throw new Error('Missing x_t / x_next');
-            }
-            const { x_t, x_next } = args;
-
-            const x_tT = wrapTensor(tf.tensor1d(x_t));
-            const x_nextT = wrapTensor(tf.tensor1d(x_next));
-            const memoryT = wrapTensor(this.memoryVec);
-
-            const cost = this.model.trainStep(x_tT, x_nextT, memoryT);
-            const { predicted, newMemory, surprise } = this.model.forward(x_tT, memoryT);
-
-            const result = {
-              cost: cost.dataSync()[0],
-              predicted: Array.from(predicted.dataSync()),
-              surprise: surprise.dataSync()[0]
-            };
-
-            this.memoryVec.assign(tf.tensor(newMemory.dataSync()));
-
-            // Cleanup
-            [x_tT, x_nextT, memoryT, predicted, newMemory, surprise, cost].forEach(t => t.dispose());
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }]
-            });
-          }
-
-          case 'forward_pass': {
-            if (!this.model || !this.memoryVec) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { x?: number[] };
-            if (!args.x) {
-              throw new Error('Missing input vector');
-            }
-
-            const xT = wrapTensor(tf.tensor1d(args.x));
-            const memoryT = wrapTensor(this.memoryVec);
-
-            const { predicted, newMemory, surprise } = this.model.forward(xT, memoryT);
-
-            const result = {
-              predicted: Array.from(predicted.dataSync()),
-              memory: Array.from(newMemory.dataSync()),
-              surprise: surprise.dataSync()[0]
-            };
-
-            this.memoryVec.assign(tf.tensor(newMemory.dataSync()));
-
-            // Cleanup
-            [xT, memoryT, predicted, newMemory, surprise].forEach(t => t.dispose());
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }]
-            });
-          }
-
-          case 'save_model': {
-            if (!this.model) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { path?: string };
-            if (!args.path) {
-              throw new Error('Missing path');
-            }
-
-            await this.model.saveModel(args.path);
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify({ message: 'Model saved' }, null, 2)
-              }]
-            });
-          }
-
-          case 'load_model': {
-            if (!this.model) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { path?: string };
-            if (!args.path) {
-              throw new Error('Missing path');
-            }
-
-            await this.model.loadModel(args.path);
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify({ message: 'Model loaded' }, null, 2)
-              }]
-            });
-          }
-
-          case 'get_status': {
-            const status = this.model
-              ? this.model.getConfig()
-              : { status: 'No model initialized' };
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify(status, null, 2)
-              }]
-            });
-          }
-
-          case 'train_sequence': {
-            if (!this.model || !this.memoryVec) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { sequence?: number[][] };
-            if (!args.sequence || !Array.isArray(args.sequence)) {
-              throw new Error('Invalid sequence format');
-            }
-            const { sequence } = args;
-
-            const outputs: tf.Tensor[] = [];
-            const metrics: any[] = [];
-
-            for (let t = 0; t < sequence.length; t++) {
-              const x_t = tf.tidy(() => {
-                const buffer = tf.buffer([1, this.model!.getConfig().inputDim || 64]);
-                for (let i = 0; i < sequence[t].length; i++) {
-                  buffer.set(sequence[t][i], 0, i);
-                }
-                return buffer.toTensor().squeeze();
-              });
-
-              const x_next = t < sequence.length - 1
-                ? tf.tensor1d(sequence[t + 1])
-                : x_t;
-
-              const wrappedX = wrapTensor(x_t);
-              const wrappedNext = wrapTensor(x_next);
-              const wrappedMemory = wrapTensor(this.memoryVec!);
-
-              const cost = this.model.trainStep(wrappedX, wrappedNext, wrappedMemory);
-              const { predicted, newMemory, surprise } = this.model.forward(wrappedX, wrappedMemory);
-
-              this.memoryVec!.assign(tf.tensor(newMemory.dataSync()));
-
-              outputs.push(tf.tensor(predicted.dataSync()));
-              metrics.push({
-                step: t,
-                cost: cost.dataSync()[0],
-                surprise: surprise.dataSync()[0]
-              });
-
-              // Cleanup
-              [wrappedX, wrappedNext, wrappedMemory, x_t, predicted, newMemory, surprise, cost].forEach(t => t.dispose());
-              if (t < sequence.length - 1) x_next.dispose();
-            }
-
-            const finalOutput = tf.stack(outputs);
-            const result = {
-              shape: finalOutput.shape,
-              output: Array.from(finalOutput.dataSync()),
-              metrics
-            };
-
-            finalOutput.dispose();
-            outputs.forEach(t => t.dispose());
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }]
-            });
-          }
-
-          case 'store_memory_state': {
-            if (!this.model || !this.memoryVec) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { key?: string };
-            if (!args.key) {
-              throw new Error('Missing key');
-            }
-
-            // Store the memory state in the LLM cache
-            const memoryState = Array.from(this.memoryVec.dataSync());
-            // In a real implementation, this would store to a database or cache
-            // For now, just send back the state that would be stored
-            
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify({ 
-                  message: 'Memory state stored',
-                  key: args.key,
-                  state: memoryState 
-                }, null, 2)
-              }]
-            });
-          }
-
-          case 'retrieve_memory_state': {
-            if (!this.model || !this.memoryVec) {
-              throw new Error('Model not initialized');
-            }
-            const args = request.params.arguments as { key?: string };
-            if (!args.key) {
-              throw new Error('Missing key');
-            }
-
-            // In a real implementation, we would retrieve from a database or cache
-            // For now, just use zeros for demonstration purposes
-            const memoryDim = this.model.getConfig().outputDim || 64;
-            const memoryState = Array(memoryDim).fill(0);
-            
-            this.memoryVec.assign(tf.tensor1d(memoryState));
-
-            return CallToolResultSchema.parse({
-              content: [{
-                type: 'text',
-                text: JSON.stringify({ 
-                  message: 'Memory state retrieved', 
-                  key: args.key
-                }, null, 2)
-              }]
-            });
-          }
-
-          default:
-            return CallToolResultSchema.parse({
-              error: {
-                code: ErrorCode.MethodNotFound,
-                message: `Unknown tool: ${request.params.name}`
-              }
-            });
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-        return CallToolResultSchema.parse({
-          error: {
-            code: ErrorCode.InternalError,
-            message: `Error: ${errorMessage}`
-          }
-        });
-      }
-    });
-  }
-
-  private async cleanup() {
-    if (this.memoryVec) {
-      this.memoryVec.dispose();
-      this.memoryVec = null;
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Failed to initialize model: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+};
 
-  public async run() {
-    await this.server.connect(new StdioServerTransport());
-    console.log('Titan Memory MCP server running on stdio');
+// Forward pass through the model
+const forwardTool: Tool = {
+  name: 'forward',
+  description: 'Perform a forward pass through the model with the given input vector',
+  parameters: z.object({
+    x: z.array(z.number())
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!model || !memoryVec) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { x } = params.arguments as { x: number[] };
+
+      return tf.tidy(() => {
+        // Convert to tensors
+        const xT = wrapTensor(tf.tensor1d(x));
+        const memoryT = wrapTensor(memoryVec!);
+
+        // Run forward pass
+        const { predicted, newMemory, surprise } = model!.forward(xT, memoryT);
+
+        // Extract values
+        const predVal = predicted.dataSync();
+        const memVal = newMemory.dataSync();
+        const surVal = surprise.dataSync()[0];
+
+        // Update memory
+        memoryVec!.assign(tf.tensor(memVal));
+
+        return CallToolResultSchema.parse({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                predicted: Array.from(predVal),
+                surprise: surVal
+              })
+            }
+          ]
+        });
+      });
+    } catch (error) {
+      throw new Error(`Forward pass failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-}
+};
 
-const server = new TitanMemoryServer();
-server.run().catch(console.error);
+// Train step
+const trainStepTool: Tool = {
+  name: 'train_step',
+  description: 'Perform a training step with the given input and target vectors',
+  parameters: z.object({
+    x_t: z.array(z.number()),
+    x_next: z.array(z.number())
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!model || !memoryVec) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { x_t, x_next } = params.arguments as { x_t: number[], x_next: number[] };
+
+      return tf.tidy(() => {
+        // Convert to tensors
+        const x_tT = wrapTensor(tf.tensor1d(x_t));
+        const x_nextT = wrapTensor(tf.tensor1d(x_next));
+        const memoryT = wrapTensor(memoryVec!);
+
+        // Run training step
+        const cost = model!.trainStep(x_tT, x_nextT, memoryT);
+
+        // Forward pass results
+        const { predicted, newMemory, surprise } = model!.forward(x_tT, memoryT);
+
+        // Extract values
+        const costVal = cost.dataSync()[0];
+        const predVal = predicted.dataSync();
+        const surVal = surprise.dataSync()[0];
+
+        // Update memory
+        memoryVec!.assign(tf.tensor(newMemory.dataSync()));
+
+        return CallToolResultSchema.parse({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                cost: costVal,
+                predicted: Array.from(predVal),
+                surprise: surVal
+              })
+            }
+          ]
+        });
+      });
+    } catch (error) {
+      throw new Error(`Training step failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Train sequence
+const trainSequenceTool: Tool = {
+  name: 'train_sequence',
+  description: 'Train the model on a sequence of vectors',
+  parameters: z.object({
+    sequence: z.array(z.array(z.number())),
+    epochs: z.number().optional(),
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!model || !memoryVec) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { sequence, epochs = 1 } = params.arguments as { sequence: number[][], epochs?: number };
+
+      if (sequence.length < 2) {
+        throw new Error('Sequence must contain at least 2 vectors');
+      }
+
+      // Train for specified number of epochs
+      const costs: number[] = [];
+
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        let epochCost = 0;
+
+        // Reset memory at start of each epoch
+        memoryVec.assign(tf.zeros([model.getConfig().outputDim || 64]));
+
+        for (let i = 0; i < sequence.length - 1; i++) {
+          const result = await trainStepTool.execute({
+            name: 'train_step',
+            arguments: {
+              x_t: sequence[i],
+              x_next: sequence[i + 1]
+            }
+          });
+
+          const content = result.content[0].text;
+          const parsed = JSON.parse(content);
+          epochCost += parsed.cost;
+        }
+
+        costs.push(epochCost / (sequence.length - 1));
+      }
+
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              costs
+            })
+          }
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Training sequence failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Save model
+const saveModelTool: Tool = {
+  name: 'save_model',
+  description: 'Save the model weights to the specified path',
+  parameters: z.object({
+    path: z.string()
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!model) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { path } = params.arguments as { path: string };
+      await model.saveModel(path);
+
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: `Model saved to ${path}`
+          }
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Failed to save model: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Load model
+const loadModelTool: Tool = {
+  name: 'load_model',
+  description: 'Load the model weights from the specified path',
+  parameters: z.object({
+    path: z.string()
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!model) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { path } = params.arguments as { path: string };
+      await model.loadModel(path);
+
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: `Model loaded from ${path}`
+          }
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Failed to load model: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Get model status
+const getStatusTool: Tool = {
+  name: 'get_status',
+  description: 'Get the current status of the model',
+  parameters: z.object({}),
+  execute: async () => {
+    if (!model) {
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ status: 'No model initialized' })
+          }
+        ]
+      });
+    }
+
+    return CallToolResultSchema.parse({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(model.getConfig())
+        }
+      ]
+    });
+  }
+};
+
+// Store memory state
+const storeMemoryStateTool: Tool = {
+  name: 'store_memory_state',
+  description: 'Store the current memory state with the given key',
+  parameters: z.object({
+    key: z.string()
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!memoryVec) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { key } = params.arguments as { key: string };
+
+      // Store current memory state
+      LLM_CACHE[key] = Array.from(memoryVec.dataSync());
+
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: `Memory state stored with key: ${key}`
+          }
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Failed to store memory state: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Retrieve memory state
+const retrieveMemoryStateTool: Tool = {
+  name: 'retrieve_memory_state',
+  description: 'Retrieve a memory state with the given key',
+  parameters: z.object({
+    key: z.string()
+  }),
+  execute: async (params: CallToolParams) => {
+    if (!memoryVec) {
+      throw new Error('Model not initialized');
+    }
+
+    try {
+      const { key } = params.arguments as { key: string };
+
+      // Check if key exists
+      if (!LLM_CACHE[key]) {
+        throw new Error(`No memory state found with key: ${key}`);
+      }
+
+      // Restore memory state
+      memoryVec.assign(tf.tensor1d(LLM_CACHE[key]));
+
+      return CallToolResultSchema.parse({
+        content: [
+          {
+            type: 'text',
+            text: `Memory state retrieved with key: ${key}`
+          }
+        ]
+      });
+    } catch (error) {
+      throw new Error(`Failed to retrieve memory state: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+};
+
+// Setup tools
+const tools = [
+  initModelTool,
+  forwardTool,
+  trainStepTool,
+  trainSequenceTool,
+  saveModelTool,
+  loadModelTool,
+  getStatusTool,
+  storeMemoryStateTool,
+  retrieveMemoryStateTool
+];
+
+// Create MCP server
+const server = createMCPServer({ tools });
+
+// Start server
+server.listen(3000, '0.0.0.0', () => {
+  console.log('Titan Memory MCP Server listening on port 3000');
+});
+
+// Handle process termination
+process.on('SIGINT', () => {
+  console.log('Shutting down server...');
+
+  // Clean up TensorFlow resources
+  if (memoryVec) {
+    memoryVec.dispose();
+  }
+
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});

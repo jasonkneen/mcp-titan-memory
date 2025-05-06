@@ -128,67 +128,60 @@ export class TitanMemoryModel implements IMemoryModel {
   }
 
   public forward(xTensor: ITensor, memoryState: ITensor): ForwardResult {
-    const x = unwrapTensor(xTensor);       // shape [inputDim]
-    const memory = unwrapTensor(memoryState); // shape [memoryDim]
+    return tf.tidy(() => {
+      const x = unwrapTensor(xTensor);       // shape [inputDim]
+      const memory = unwrapTensor(memoryState); // shape [memoryDim]
 
-    // Gate the memory state
-    const forgetVal = this.forgetGate; // shape []
-    const one = tf.scalar(1.0);
-    const gatedMemory = tf.mul(memory, tf.sub(one, forgetVal)); // shape [memoryDim]
+      // Gate the memory state
+      const forgetVal = this.forgetGate; // shape []
+      const one = tf.scalar(1.0);
+      const gatedMemory = tf.mul(memory, tf.sub(one, forgetVal)); // shape [memoryDim]
 
-    // Combine input and gated memory => shape [inputDim + memoryDim]
-    const combined = tf.concat([x, gatedMemory], 0);
-    const combinedReshaped = combined.reshape([1, this.inputDim + this.memoryDim]);
+      // Combine input and gated memory => shape [inputDim + memoryDim]
+      const combined = tf.concat([x, gatedMemory], 0);
+      const combinedReshaped = combined.reshape([1, this.inputDim + this.memoryDim]);
 
-    // MLP forward pass
-    const hidden1 = tf.add(
-      tf.matMul(combinedReshaped, this.W1.transpose()),
-      this.b1
-    ).relu(); // shape [1, hiddenDim]
+      // MLP forward pass
+      const hidden1 = tf.add(
+        tf.matMul(combinedReshaped, this.W1.transpose()),
+        this.b1
+      ).relu(); // shape [1, hiddenDim]
 
-    let out = tf.add(
-      tf.matMul(hidden1, this.W2.transpose()),
-      this.b2
-    ).squeeze(); 
+      let out = tf.add(
+        tf.matMul(hidden1, this.W2.transpose()),
+        this.b2
+      ).squeeze(); 
 
-    // If out was completely scalar (which it shouldn't be), fix shape:
-    if (out.shape.length === 0) {
-      out = out.reshape([1]);
-    }
+      // If out was completely scalar (which it shouldn't be), fix shape:
+      if (out.shape.length === 0) {
+        out = out.reshape([1]);
+      }
 
-    // Split output into new memory [0: memoryDim], predicted [memoryDim: memoryDim+inputDim]
-    const newMemory = out.slice([0], [this.memoryDim]);
-    const predicted = out.slice([this.memoryDim], [this.inputDim]);
+      // Split output into new memory [0: memoryDim], predicted [memoryDim: memoryDim+inputDim]
+      const newMemory = out.slice([0], [this.memoryDim]);
+      const predicted = out.slice([this.memoryDim], [this.inputDim]);
 
-    // Calculate surprise (MSE between predicted and x)
-    const diff = tf.sub(predicted, x);
-    const surprise = tf.mean(tf.square(diff)); // scalar
+      // Calculate surprise (MSE between predicted and x)
+      const diff = tf.sub(predicted, x);
+      const surprise = tf.mean(tf.square(diff)); // scalar
 
-    // Multi-head attention for memory update
-    const attentionOutput = this.multiHeadAttention(newMemory, memory, memory);
+      // Multi-head attention for memory update
+      const attentionOutput = this.multiHeadAttention(newMemory, memory, memory);
 
-    // Hierarchical memory update
-    for (let i = 0; i < this.numLayers; i++) {
-      const layerMemory = this.hierarchicalMemory[i];
-      const updatedLayerMemory = tf.add(layerMemory, attentionOutput);
-      this.hierarchicalMemory[i].assign(updatedLayerMemory);
-    }
+      // Hierarchical memory update
+      for (let i = 0; i < this.numLayers; i++) {
+        const layerMemory = this.hierarchicalMemory[i];
+        const updatedLayerMemory = tf.add(layerMemory, attentionOutput);
+        this.hierarchicalMemory[i].assign(updatedLayerMemory);
+      }
 
-    // Clean up intermediate tensors
-    one.dispose();
-    gatedMemory.dispose();
-    combined.dispose();
-    combinedReshaped.dispose();
-    hidden1.dispose();
-    out.dispose();
-    diff.dispose();
-    attentionOutput.dispose();
 
-    return {
-      predicted: wrapTensor(predicted),
-      newMemory: wrapTensor(newMemory),
-      surprise: wrapTensor(surprise)
-    };
+      return {
+        predicted: wrapTensor(predicted),
+        newMemory: wrapTensor(newMemory),
+        surprise: wrapTensor(surprise)
+      };
+    });
   }
 
   public manifoldStep(base: ITensor, velocity: ITensor): ITensor {
@@ -230,38 +223,40 @@ export class TitanMemoryModel implements IMemoryModel {
   }
 
   public trainStep(x_t: ITensor, x_next: ITensor, memoryState: ITensor): ITensor {
-    const xt = unwrapTensor(x_t);
-    const xn = unwrapTensor(x_next);
-    const mem = unwrapTensor(memoryState);
+    return tf.tidy(() => {
+      const xt = unwrapTensor(x_t);
+      const xn = unwrapTensor(x_next);
+      const mem = unwrapTensor(memoryState);
 
-    // Minimizing a combined loss
-    const cost = this.optimizer.minimize(() => {
-      const { predicted, newMemory, surprise } = this.forward(x_t, memoryState);
+      // Minimizing a combined loss
+      const cost = this.optimizer.minimize(() => {
+        const { predicted, newMemory, surprise } = this.forward(x_t, memoryState);
 
-      // MSE wrt x_next plus a small "surprise" penalty
-      const diff = tf.sub(unwrapTensor(predicted), xn);
-      const mse = tf.mean(tf.square(diff)).asScalar();
-      const spr = unwrapTensor(surprise);
-      
-      // Clean up intermediate tensors
-      diff.dispose();
-      predicted.dispose();
-      newMemory.dispose();
+        // MSE wrt x_next plus a small "surprise" penalty
+        const diff = tf.sub(unwrapTensor(predicted), xn);
+        const mse = tf.mean(tf.square(diff)).asScalar();
+        const spr = unwrapTensor(surprise);
 
-      // Weighted combination
-      const totalLoss = tf.add(mse, tf.mul(tf.scalar(0.01), spr)).asScalar();
-      
-      // Clean up more tensors
-      mse.dispose();
-      spr.dispose();
-      
-      return totalLoss;
-    }, true);
+        // Clean up intermediate tensors
+        diff.dispose();
+        predicted.dispose();
+        newMemory.dispose();
 
-    // If cost is null for some reason, return scalar(0)
-    const result = wrapTensor(cost || tf.scalar(0));
+        // Weighted combination
+        const totalLoss = tf.add(mse, tf.mul(tf.scalar(0.01), spr)).asScalar();
 
-    return result;
+        // Clean up more tensors
+        mse.dispose();
+        spr.dispose();
+
+        return totalLoss;
+      }, true);
+
+      // If cost is null for some reason, return scalar(0)
+      const result = wrapTensor(cost || tf.scalar(0));
+
+      return result;
+    });
   }
 
   public async saveModel(path: string): Promise<void> {
@@ -326,5 +321,47 @@ export class TitanMemoryModel implements IMemoryModel {
       attentionOutputWeights: this.attentionOutputWeights.map(w => w.arraySync()),
       hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync())
     };
+  }
+
+  public train_sequence(sequence: ITensor[], epochs: number = 1): number[] {
+    const costs: number[] = [];
+
+    try {
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        let epochCost = 0;
+
+        tf.tidy(() => {
+          let memory = this.zeroVector(this.getConfig().outputDim);
+
+          for (let i = 0; i < sequence.length - 1; i++) {
+            const x_t = sequence[i];
+            const x_next = sequence[i + 1];
+
+            const cost = this.trainStep(x_t, x_next, memory);
+            const { newMemory } = this.forward(x_t, memory);
+
+            // Update memory for next iteration
+            memory = newMemory;
+            epochCost += cost.dataSync()[0];
+          }
+
+          costs.push(epochCost / (sequence.length - 1));
+        });
+      }
+
+      return costs;
+    } catch (error) {
+      console.error('Error in train_sequence:', error);
+      throw error;
+    } finally {
+      // Report memory stats in debug mode
+      if (process.env.DEBUG) {
+        console.log('TensorFlow memory stats:', tf.memory());
+      }
+    }
+  }
+
+  private zeroVector(dim: number): ITensor {
+    return wrapTensor(tf.zeros([dim]));
   }
 }
