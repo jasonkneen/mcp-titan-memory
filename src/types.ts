@@ -92,3 +92,16 @@ export function unwrapTensor(tensor: ITensor): tf.Tensor {
   }
   throw new Error('Cannot unwrap non-TensorWrapper object');
 }
+
+export interface TitanMemoryConfig {
+  inputDim?: number;
+  hiddenDim?: number;
+  outputDim?: number;
+  learningRate?: number;
+  useAttention?: boolean;
+  useManifold?: boolean;
+  numHeads?: number;
+  maxStepSize?: number;
+  tangentEpsilon?: number;
+  numLayers?: number;
+}

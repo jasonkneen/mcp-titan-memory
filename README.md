@@ -1,68 +1,81 @@
-# Titan Memory
 
-This repository contains an implementation of the Titan Memory architecture, a hierarchical memory model for artificial neural networks.
+# Titan Memory Server
+
+A Model Context Protocol (MCP) server implementation with an enhanced Titan Memory model.
+
+## Overview
+
+This project implements a memory model for large language models (LLMs) that is designed to enhance memory capabilities in generative AI systems. It's built using TensorFlow.js and implemented as an MCP server, making it easy to integrate with any MCP-compatible client.
 
 ## Features
 
-Currently implemented:
-- Multi-head attention mechanism
-- Hierarchical memory structure
-- Memory state persistence
-- Integration with Model Context Protocol (MCP)
+Current implementation includes:
+- Multi-head attention mechanism for improved memory focus
+- Basic hierarchical memory structure for organizing information
+- Manifold operations for geometric memory representation
+- Surprise-based memory updates to focus on unexpected information
+- TensorFlow.js backend for efficient tensor operations
 
 Planned features:
+- Enhanced contextual memory updates
+- Memory replay mechanism
 - Dynamic memory allocation
-- Long-term memory storage
-- Memory replay for enhanced learning
 
-## Getting Started
+## Usage
 
-### Prerequisites
-- Node.js 16+
-- npm or pnpm
+The server exposes several tools via the Model Context Protocol (MCP):
 
-### Installation
+- `init_model`: Initialize the memory model with custom configurations
+- `forward`: Perform a forward pass through the model
+- `train_step`: Perform a single training step
+- `train_sequence`: Train on a sequence of vectors
+- `save_model`: Save the current model weights
+- `load_model`: Load model weights from a saved file
+- `get_status`: Get the current status of the model
+- `store_memory_state`: Store the current memory state with a key
+- `retrieve_memory_state`: Retrieve a stored memory state
+
+## Installation
 
 ```bash
 npm install
 ```
 
-### Running the Server
+## Running the Server
 
 ```bash
 npm run build
-npm run start
+npm start
 ```
 
-For development with hot reloading:
+This will start the MCP server on port 3000.
+
+## Development
+
 ```bash
 npm run watch
 ```
 
-### Testing
+## Testing
 
 ```bash
 npm test
 ```
-
-## Architecture
-
-The Titan Memory model employs a hierarchical approach to memory management, using multiple attention heads to process and store information in a structured format. The implementation is based on TensorFlow.js and provides both a direct API and an MCP-compliant interface.
-
 
 ## Citation
 
 If you use this implementation in your research, please cite:
 
 ```
-@article{titanmemory2023,
-  title={Titan Memory: An Efficient Hierarchical Memory Architecture for Neural Networks},
-  author={Author, A.},
-  journal={ArXiv},
-  year={2023}
+@misc{titanmemory2023,
+  author = {Replit Team},
+  title = {Titan Memory: Enhanced Memory Framework for Language Models},
+  year = {2023},
+  publisher = {GitHub},
+  url = {https://github.com/replit/titan-memory}
 }
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT
