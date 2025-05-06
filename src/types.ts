@@ -96,7 +96,7 @@ export function unwrapTensor(tensor: ITensor): tf.Tensor {
 export interface TitanMemoryConfig {
   inputDim?: number;
   hiddenDim?: number;
-  outputDim?: number;
+  memoryDim?: number; // Changed from outputDim for consistency
   learningRate?: number;
   useAttention?: boolean;
   useManifold?: boolean;

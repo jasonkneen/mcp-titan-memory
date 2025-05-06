@@ -60,8 +60,8 @@ export class TitanMemoryModel implements IMemoryModel {
     this.inputDim = config.inputDim || 64;
     this.hiddenDim = config.hiddenDim || 32;
 
-    // We interpret 'outputDim' from config as the memory dimension:
-    this.memoryDim = config.outputDim || 64;
+    // Use memoryDim directly if available, fall back to outputDim for backward compatibility
+    this.memoryDim = config.memoryDim || config.outputDim || 64;
 
     this.fullOutputDim = this.inputDim + this.memoryDim;
 
@@ -261,6 +261,7 @@ export class TitanMemoryModel implements IMemoryModel {
   }
 
   public async saveModel(path: string): Promise<void> {
+    // Extract weights data without creating intermediate tensors
     const weights = {
       W1: await this.W1.array(),
       b1: await this.b1.array(),
@@ -274,30 +275,45 @@ export class TitanMemoryModel implements IMemoryModel {
       hierarchicalMemory: await Promise.all(this.hierarchicalMemory.map(m => m.array()))
     };
 
-    await fs.writeFile(path.replace('file://',''), JSON.stringify(weights));
+    // Use proper path normalization
+    const normalizedPath = path.replace('file://', '');
+    await fs.writeFile(normalizedPath, JSON.stringify(weights));
   }
 
   public async loadModel(path: string): Promise<void> {
-    const weightsJson = await fs.readFile(path.replace('file://',''), 'utf8');
-    const weights = JSON.parse(weightsJson);
+    try {
+      // Normalize path
+      const normalizedPath = path.replace('file://', '');
+      const weightsJson = await fs.readFile(normalizedPath, 'utf8');
+      const weights = JSON.parse(weightsJson);
 
-    this.W1.assign(tf.tensor2d(weights.W1));
-    this.b1.assign(tf.tensor1d(weights.b1));
-    this.W2.assign(tf.tensor2d(weights.W2));
-    this.b2.assign(tf.tensor1d(weights.b2));
-    this.forgetGate.assign(tf.scalar(weights.forgetGate));
-    this.queryWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.queryWeights[i])));
-    this.keyWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.keyWeights[i])));
-    this.valueWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.valueWeights[i])));
-    this.attentionOutputWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.attentionOutputWeights[i])));
-    this.hierarchicalMemory.forEach((m, i) => m.assign(tf.tensor1d(weights.hierarchicalMemory[i])));
+      // Use tf.tidy to handle intermediate tensors
+      tf.tidy(() => {
+        // Assign weights to variables
+        this.W1.assign(tf.tensor2d(weights.W1));
+        this.b1.assign(tf.tensor1d(weights.b1));
+        this.W2.assign(tf.tensor2d(weights.W2));
+        this.b2.assign(tf.tensor1d(weights.b2));
+        this.forgetGate.assign(tf.scalar(weights.forgetGate));
+        
+        // Handle array-based weights
+        this.queryWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.queryWeights[i])));
+        this.keyWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.keyWeights[i])));
+        this.valueWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.valueWeights[i])));
+        this.attentionOutputWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.attentionOutputWeights[i])));
+        this.hierarchicalMemory.forEach((m, i) => m.assign(tf.tensor1d(weights.hierarchicalMemory[i])));
+      });
+    } catch (error) {
+      throw new Error(`Failed to load model from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   public getConfig(): TitanMemoryConfig {
     return {
       inputDim: this.inputDim,
       hiddenDim: this.hiddenDim,
-      outputDim: this.memoryDim, // We keep "outputDim" referring to memoryDim
+      memoryDim: this.memoryDim, // Use memoryDim consistently
+      outputDim: this.memoryDim, // Keep outputDim for backward compatibility
       learningRate: this.learningRate,
       useManifold: this.useManifold,
       momentumFactor: this.momentumFactor,
@@ -339,6 +355,7 @@ export class TitanMemoryModel implements IMemoryModel {
       for (let epoch = 0; epoch < epochs; epoch++) {
         let epochCost = 0;
 
+        // Use tidy to clean up all intermediate tensors
         tf.tidy(() => {
           let memory = this.zeroVector(this.getConfig().outputDim);
 
@@ -346,12 +363,19 @@ export class TitanMemoryModel implements IMemoryModel {
             const x_t = sequence[i];
             const x_next = sequence[i + 1];
 
-            const cost = this.trainStep(x_t, x_next, memory);
-            const { newMemory } = this.forward(x_t, memory);
+            // Wrap in another tidy to clear intermediate tensors for each step
+            tf.tidy(() => {
+              const cost = this.trainStep(x_t, x_next, memory);
+              const { newMemory } = this.forward(x_t, memory);
 
-            // Update memory for next iteration
-            memory = newMemory;
-            epochCost += cost.dataSync()[0];
+              // Update memory for next iteration (making sure to dispose old memory)
+              const oldMemory = memory;
+              memory = newMemory;
+              epochCost += cost.dataSync()[0];
+              
+              // Dispose cost tensor
+              cost.dispose();
+            });
           }
 
           costs.push(epochCost / (sequence.length - 1));
@@ -363,6 +387,9 @@ export class TitanMemoryModel implements IMemoryModel {
       console.error('Error in train_sequence:', error);
       throw error;
     } finally {
+      // Force garbage collection
+      tf.disposeVariables();
+      
       // Report memory stats in debug mode
       if (process.env.DEBUG) {
         console.log('TensorFlow memory stats:', tf.memory());

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { TitanMemoryModel } from './model.js';
 import * as tf from '@tensorflow/tfjs';
 import { wrapTensor } from './types.js';
+import logger from './logger.js';
 
 // Memory cache for storing model states
 const LLM_CACHE: Record<string, number[]> = {};
