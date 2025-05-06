@@ -10,6 +10,8 @@ export interface TitanMemoryConfig {
     forgetGateInit?: number;
     maxStepSize?: number;
     tangentEpsilon?: number;
+    numHeads?: number;
+    numLayers?: number;
 }
 interface ForwardResult extends tf.TensorContainerObject {
     predicted: ITensor;
@@ -27,6 +29,8 @@ export declare class TitanMemoryModel implements IMemoryModel {
     private forgetGateInit;
     private maxStepSize;
     private tangentEpsilon;
+    private numHeads;
+    private numLayers;
     private fullOutputDim;
     private W1;
     private b1;
@@ -34,7 +38,13 @@ export declare class TitanMemoryModel implements IMemoryModel {
     private b2;
     private forgetGate;
     private optimizer;
+    private queryWeights;
+    private keyWeights;
+    private valueWeights;
+    private attentionOutputWeights;
+    private hierarchicalMemory;
     constructor(config?: TitanMemoryConfig);
+    private multiHeadAttention;
     forward(xTensor: ITensor, memoryState: ITensor): ForwardResult;
     manifoldStep(base: ITensor, velocity: ITensor): ITensor;
     trainStep(x_t: ITensor, x_next: ITensor, memoryState: ITensor): ITensor;
@@ -47,6 +57,11 @@ export declare class TitanMemoryModel implements IMemoryModel {
         W2: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
         b2: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
         forgetGate: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
+        queryWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        keyWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        valueWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        attentionOutputWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        hierarchicalMemory: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
     };
 }
 export {};

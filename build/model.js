@@ -14,6 +14,8 @@ export class TitanMemoryModel {
         this.forgetGateInit = config.forgetGateInit || 0.01;
         this.maxStepSize = config.maxStepSize || 0.1;
         this.tangentEpsilon = config.tangentEpsilon || 1e-8;
+        this.numHeads = config.numHeads || 4;
+        this.numLayers = config.numLayers || 3;
         // Initialize trainable parameters
         // First layer receives inputDim + memoryDim:
         this.W1 = tf.variable(tf.randomNormal([this.hiddenDim, this.inputDim + this.memoryDim], 0, 0.1));
@@ -25,6 +27,36 @@ export class TitanMemoryModel {
         this.forgetGate = tf.variable(tf.scalar(this.forgetGateInit));
         // Initialize optimizer
         this.optimizer = tf.train.adam(this.learningRate);
+        // Initialize attention parameters
+        this.queryWeights = [];
+        this.keyWeights = [];
+        this.valueWeights = [];
+        this.attentionOutputWeights = [];
+        for (let i = 0; i < this.numHeads; i++) {
+            this.queryWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
+            this.keyWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
+            this.valueWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
+            this.attentionOutputWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
+        }
+        // Initialize hierarchical memory
+        this.hierarchicalMemory = [];
+        for (let i = 0; i < this.numLayers; i++) {
+            this.hierarchicalMemory.push(tf.variable(tf.zeros([this.memoryDim])));
+        }
+    }
+    multiHeadAttention(query, key, value) {
+        const attentionHeads = [];
+        for (let i = 0; i < this.numHeads; i++) {
+            const q = tf.matMul(query, this.queryWeights[i]);
+            const k = tf.matMul(key, this.keyWeights[i]);
+            const v = tf.matMul(value, this.valueWeights[i]);
+            const attentionScores = tf.softmax(tf.matMul(q, k.transpose()).div(tf.scalar(Math.sqrt(this.memoryDim))));
+            const attentionOutput = tf.matMul(attentionScores, v);
+            attentionHeads.push(attentionOutput);
+        }
+        const concatenatedHeads = tf.concat(attentionHeads, -1);
+        const output = tf.matMul(concatenatedHeads, this.attentionOutputWeights[0]);
+        return output;
     }
     forward(xTensor, memoryState) {
         const x = unwrapTensor(xTensor); // shape [inputDim]
@@ -49,6 +81,14 @@ export class TitanMemoryModel {
         // Calculate surprise (MSE between predicted and x)
         const diff = tf.sub(predicted, x);
         const surprise = tf.mean(tf.square(diff)); // scalar
+        // Multi-head attention for memory update
+        const attentionOutput = this.multiHeadAttention(newMemory, memory, memory);
+        // Hierarchical memory update
+        for (let i = 0; i < this.numLayers; i++) {
+            const layerMemory = this.hierarchicalMemory[i];
+            const updatedLayerMemory = tf.add(layerMemory, attentionOutput);
+            this.hierarchicalMemory[i].assign(updatedLayerMemory);
+        }
         // Clean up intermediate tensors
         one.dispose();
         gatedMemory.dispose();
@@ -57,6 +97,7 @@ export class TitanMemoryModel {
         hidden1.dispose();
         out.dispose();
         diff.dispose();
+        attentionOutput.dispose();
         return {
             predicted: wrapTensor(predicted),
             newMemory: wrapTensor(newMemory),
@@ -126,7 +167,12 @@ export class TitanMemoryModel {
             b1: await this.b1.array(),
             W2: await this.W2.array(),
             b2: await this.b2.array(),
-            forgetGate: await this.forgetGate.array()
+            forgetGate: await this.forgetGate.array(),
+            queryWeights: await Promise.all(this.queryWeights.map(w => w.array())),
+            keyWeights: await Promise.all(this.keyWeights.map(w => w.array())),
+            valueWeights: await Promise.all(this.valueWeights.map(w => w.array())),
+            attentionOutputWeights: await Promise.all(this.attentionOutputWeights.map(w => w.array())),
+            hierarchicalMemory: await Promise.all(this.hierarchicalMemory.map(m => m.array()))
         };
         await fs.writeFile(path.replace('file://', ''), JSON.stringify(weights));
     }
@@ -138,6 +184,11 @@ export class TitanMemoryModel {
         this.W2.assign(tf.tensor2d(weights.W2));
         this.b2.assign(tf.tensor1d(weights.b2));
         this.forgetGate.assign(tf.scalar(weights.forgetGate));
+        this.queryWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.queryWeights[i])));
+        this.keyWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.keyWeights[i])));
+        this.valueWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.valueWeights[i])));
+        this.attentionOutputWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.attentionOutputWeights[i])));
+        this.hierarchicalMemory.forEach((m, i) => m.assign(tf.tensor1d(weights.hierarchicalMemory[i])));
     }
     getConfig() {
         return {
@@ -149,7 +200,9 @@ export class TitanMemoryModel {
             momentumFactor: this.momentumFactor,
             forgetGateInit: this.forgetGateInit,
             maxStepSize: this.maxStepSize,
-            tangentEpsilon: this.tangentEpsilon
+            tangentEpsilon: this.tangentEpsilon,
+            numHeads: this.numHeads,
+            numLayers: this.numLayers
         };
     }
     getWeights() {
@@ -158,7 +211,12 @@ export class TitanMemoryModel {
             b1: this.b1.arraySync(),
             W2: this.W2.arraySync(),
             b2: this.b2.arraySync(),
-            forgetGate: this.forgetGate.arraySync()
+            forgetGate: this.forgetGate.arraySync(),
+            queryWeights: this.queryWeights.map(w => w.arraySync()),
+            keyWeights: this.keyWeights.map(w => w.arraySync()),
+            valueWeights: this.valueWeights.map(w => w.arraySync()),
+            attentionOutputWeights: this.attentionOutputWeights.map(w => w.arraySync()),
+            hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync())
         };
     }
 }

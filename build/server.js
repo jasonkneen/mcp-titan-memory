@@ -3,15 +3,18 @@ import bodyParser from 'body-parser';
 import * as tf from '@tensorflow/tfjs';
 import { TitanMemoryModel } from './model.js';
 import { wrapTensor } from './types.js';
+import WebSocket from 'ws';
 export class TitanExpressServer {
     constructor(port = 3000) {
         this.server = null;
         this.model = null;
         this.memoryVec = null;
+        this.wss = null;
         this.port = port;
         this.app = express();
         this.setupMiddleware();
         this.setupRoutes();
+        this.setupWebSocket();
     }
     setupMiddleware() {
         this.app.use(bodyParser.json());
@@ -171,6 +174,42 @@ export class TitanExpressServer {
                 return res.status(200).json({ status: 'No model' });
             }
             return res.json(this.model.getConfig());
+        });
+    }
+    setupWebSocket() {
+        this.wss = new WebSocket.Server({ port: this.port + 1 });
+        this.wss.on('connection', (ws) => {
+            ws.on('message', (message) => {
+                const data = JSON.parse(message.toString());
+                const { action, payload } = data;
+                switch (action) {
+                    case 'forward':
+                        if (!this.model || !this.memoryVec) {
+                            ws.send(JSON.stringify({ error: 'Model not initialized' }));
+                            return;
+                        }
+                        const xT = wrapTensor(tf.tensor1d(payload.x));
+                        const memoryT = wrapTensor(this.memoryVec);
+                        const { predicted, newMemory, surprise } = this.model.forward(xT, memoryT);
+                        const predVal = predicted.dataSync();
+                        const memVal = newMemory.dataSync();
+                        const surVal = surprise.dataSync()[0];
+                        this.memoryVec.assign(tf.tensor(newMemory.dataSync()));
+                        xT.dispose();
+                        memoryT.dispose();
+                        predicted.dispose();
+                        newMemory.dispose();
+                        surprise.dispose();
+                        ws.send(JSON.stringify({
+                            predicted: Array.from(predVal),
+                            memory: Array.from(memVal),
+                            surprise: surVal
+                        }));
+                        break;
+                    default:
+                        ws.send(JSON.stringify({ error: 'Unknown action' }));
+                }
+            });
         });
     }
     start() {
