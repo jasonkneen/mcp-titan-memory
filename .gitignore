@@ -37,3 +37,7 @@ test-weights*
 *.njsproj
 *.sln
 *.sw?
+.opencode/init
+.opencode/opencode.db
+.opencode/opencode.db-shm
+.opencode/opencode.db-wal
