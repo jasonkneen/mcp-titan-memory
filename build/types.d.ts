@@ -63,3 +63,15 @@ export declare class TensorWrapper implements ITensor {
 }
 export declare function wrapTensor(tensor: tf.Tensor): ITensor;
 export declare function unwrapTensor(tensor: ITensor): tf.Tensor;
+export interface TitanMemoryConfig {
+    inputDim?: number;
+    hiddenDim?: number;
+    outputDim?: number;
+    learningRate?: number;
+    useAttention?: boolean;
+    useManifold?: boolean;
+    numHeads?: number;
+    maxStepSize?: number;
+    tangentEpsilon?: number;
+    numLayers?: number;
+}

@@ -216,6 +216,18 @@ export class TitanMemoryModel {
             hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync())
         };
     }
+    getLayerMemoryState(layerIndex) {
+        // This is a stub implementation that returns a slice of the memory
+        // In a full implementation, this would return the actual hierarchical memory state
+        if (layerIndex < 0 || layerIndex >= this.numLayers) {
+            throw new Error(`Invalid layer index: ${layerIndex}. Valid range is 0-${this.numLayers - 1}`);
+        }
+        // Create a mock layer memory by dividing the memory vector
+        const start = layerIndex * Math.floor(this.memoryDim / this.numLayers);
+        const end = (layerIndex + 1) * Math.floor(this.memoryDim / this.numLayers);
+        // Return a portion of the memory as an array
+        return Array.from(this.hierarchicalMemory[layerIndex].dataSync()).slice(start, end);
+    }
     train_sequence(sequence, epochs = 1) {
         const costs = [];
         try {
