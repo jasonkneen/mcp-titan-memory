@@ -396,20 +396,24 @@ const server = createMCPServer({ tools });
 
 // Start server
 server.listen(3000, '0.0.0.0', () => {
-  console.log('Titan Memory MCP Server listening on port 3000');
+  logger.info('Titan Memory MCP Server listening on port 3000');
 });
 
 // Handle process termination
 process.on('SIGINT', () => {
-  console.log('Shutting down server...');
+  logger.info('Shutting down server...');
 
   // Clean up TensorFlow resources
-  if (memoryVec) {
-    memoryVec.dispose();
-  }
+  tf.tidy(() => {
+    if (memoryVec) {
+      memoryVec.dispose();
+    }
+    // Force garbage collection
+    tf.disposeVariables();
+  });
 
   server.close(() => {
-    console.log('Server closed');
+    logger.info('Server closed');
     process.exit(0);
   });
 });

@@ -96,7 +96,8 @@ export function unwrapTensor(tensor: ITensor): tf.Tensor {
 export interface TitanMemoryConfig {
   inputDim?: number;
   hiddenDim?: number;
-  memoryDim?: number; // Changed from outputDim for consistency
+  memoryDim?: number; // Primary parameter for memory dimension
+  outputDim?: number; // Legacy parameter, kept for backward compatibility
   learningRate?: number;
   useAttention?: boolean;
   useManifold?: boolean;
@@ -104,4 +105,6 @@ export interface TitanMemoryConfig {
   maxStepSize?: number;
   tangentEpsilon?: number;
   numLayers?: number;
+  momentumFactor?: number;
+  forgetGateInit?: number;
 }
