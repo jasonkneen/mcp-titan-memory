@@ -64,19 +64,12 @@ npm run watch
 npm test
 ```
 
-## Citation
+## Thanks to
 
-If you use this implementation in your research, please cite:
+- Google for the Titan Paper
+- Me for the first version
+- @ExpressionsBot for their contributions to the early versions
 
-```
-@misc{titanmemory2023,
-  author = {Replit Team},
-  title = {Titan Memory: Enhanced Memory Framework for Language Models},
-  year = {2023},
-  publisher = {GitHub},
-  url = {https://github.com/replit/titan-memory}
-}
-```
 
 ## License
 
