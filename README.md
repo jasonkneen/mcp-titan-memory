@@ -1,6 +1,6 @@
 # Titan Memory Server
 
-A Model Context Protocol (MCP) server implementation with an enhanced Titan Memory model.
+A Model Context Protocol (MCP) server implementation with an enhanced Titan Memory model inspired by the Google white paper.
 
 ## Overview
 
