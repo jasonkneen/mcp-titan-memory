@@ -113,4 +113,7 @@ export interface TitanMemoryConfig {
   longTermMemorySize?: number; // Size of long-term memory storage
   dynamicAllocation?: boolean; // Enable dynamic memory allocation
   cacheTTL?: number; // Time-to-live for LLM cache entries in milliseconds
+  persistentDim?: number; // Size of persistent task-specific memory
+  useMomentum?: boolean; // Enable momentum-based memory updates
+  variant?: 'mac' | 'mag' | 'mal'; // Memory integration variant
 }

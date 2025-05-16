@@ -50,6 +50,13 @@ export class TitanMemoryModel implements IMemoryModel {
   private longTermMemorySize: number;
   private dynamicAllocation: boolean;
   private cacheTTL: number;
+
+  // New memory mechanisms
+  private persistentDim: number;
+  private useMomentum: boolean;
+  private variant: 'mac' | 'mag' | 'mal';
+  private persistentMemory: tf.Variable | null;
+  private momentumMemory: tf.Variable | null;
   
   // Memory replay buffer
   private replayBuffer: Array<{input: number[], memory: number[], target: number[]}>;
@@ -109,6 +116,11 @@ export class TitanMemoryModel implements IMemoryModel {
     this.longTermMemorySize = config.longTermMemorySize || 10000;
     this.dynamicAllocation = config.dynamicAllocation || false;
     this.cacheTTL = config.cacheTTL || 3600000; // Default 1 hour
+
+    // New memory mechanism settings
+    this.persistentDim = config.persistentDim || 0;
+    this.useMomentum = config.useMomentum || false;
+    this.variant = config.variant || 'mac';
     
     // Initialize memory structures
     this.replayBuffer = [];
@@ -116,8 +128,9 @@ export class TitanMemoryModel implements IMemoryModel {
     this.llmCache = new Map();
 
     // Initialize trainable parameters
-    // First layer receives inputDim + memoryDim:
-    this.W1 = tf.variable(tf.randomNormal([this.hiddenDim, this.inputDim + this.memoryDim], 0, 0.1));
+    // First layer receives inputDim + memoryDim + persistentDim:
+    const inputSize = this.inputDim + this.memoryDim + this.persistentDim;
+    this.W1 = tf.variable(tf.randomNormal([this.hiddenDim, inputSize], 0, 0.1));
     this.b1 = tf.variable(tf.zeros([this.hiddenDim]));
 
     // Second layer outputs (memoryDim + inputDim):
@@ -150,6 +163,14 @@ export class TitanMemoryModel implements IMemoryModel {
     // Initialize memory compression parameters
     this.compressionWeights = tf.variable(tf.randomNormal([Math.floor(this.memoryDim * this.compressionRate), this.memoryDim], 0, 0.1));
     this.compressionBias = tf.variable(tf.zeros([Math.floor(this.memoryDim * this.compressionRate)]));
+
+    // Initialize persistent and momentum memories
+    this.persistentMemory = this.persistentDim > 0 ?
+      tf.variable(tf.randomNormal([this.persistentDim], 0, 0.1)) :
+      null;
+    this.momentumMemory = this.useMomentum ?
+      tf.variable(tf.zeros([this.memoryDim])) :
+      null;
   }
 
   private multiHeadAttention(query: tf.Tensor, key: tf.Tensor, value: tf.Tensor): tf.Tensor {
@@ -185,9 +206,13 @@ export class TitanMemoryModel implements IMemoryModel {
         return tf.mul(memory, tf.sub(one, forgetVal)); // shape [memoryDim]
       });
 
-      // Combine input and gated memory => shape [inputDim + memoryDim]
-      const combined = tf.concat([x, gatedMemory], 0);
-      const combinedReshaped = combined.reshape([1, this.inputDim + this.memoryDim]);
+      // Combine input, gated memory, and persistent memory if available
+      const parts: tf.Tensor[] = [x, gatedMemory];
+      if (this.persistentMemory) {
+        parts.push(this.persistentMemory);
+      }
+      const combined = tf.concat(parts, 0);
+      const combinedReshaped = combined.reshape([1, this.inputDim + this.memoryDim + this.persistentDim]);
 
       // MLP forward pass
       const hidden1 = tf.add(
@@ -213,6 +238,15 @@ export class TitanMemoryModel implements IMemoryModel {
       const diff = tf.sub(predicted, x);
       const surprise = tf.mean(tf.square(diff)); // scalar
 
+      // Momentum memory update
+      if (this.useMomentum && this.momentumMemory) {
+        const momentumUpdate = tf.add(
+          this.momentumMemory.mul(tf.scalar(this.momentumFactor)),
+          newMemory.mul(tf.scalar(1 - this.momentumFactor))
+        );
+        this.momentumMemory.assign(momentumUpdate);
+      }
+
       // Multi-head attention for memory update
       const attentionOutput = this.multiHeadAttention(newMemory, memory, memory);
 
@@ -228,10 +262,22 @@ export class TitanMemoryModel implements IMemoryModel {
         this.addToReplayBuffer(x.flatten().arraySync() as number[], memory.flatten().arraySync() as number[], predicted.flatten().arraySync() as number[]);
       }
       
+      // Integrate momentum memory if enabled
+      let integrationMemory = newMemory;
+      if (this.useMomentum && this.momentumMemory) {
+        if (this.variant === 'mag') {
+          const gate = tf.sigmoid(this.forgetGate);
+          integrationMemory = tf.add(
+            tf.mul(gate, newMemory),
+            tf.mul(tf.sub(tf.scalar(1.0), gate), this.momentumMemory)
+          );
+        }
+      }
+
       // Dynamic memory allocation if enabled
-      let dynamicMemory = newMemory;
+      let dynamicMemory = integrationMemory;
       if (this.dynamicAllocation) {
-        dynamicMemory = this.allocateMemoryDynamically(newMemory, surprise);
+        dynamicMemory = this.allocateMemoryDynamically(integrationMemory, surprise);
       }
       
       // Cache the result if surprise is low (indicating high confidence)
@@ -344,6 +390,8 @@ export class TitanMemoryModel implements IMemoryModel {
       hierarchicalMemory: await Promise.all(this.hierarchicalMemory.map(m => m.array())),
       compressionWeights: await this.compressionWeights.array(),
       compressionBias: await this.compressionBias.array(),
+      persistentMemory: this.persistentMemory ? await this.persistentMemory.array() : null,
+      momentumMemory: this.momentumMemory ? await this.momentumMemory.array() : null,
       // Save advanced memory structures
       replayBuffer: this.replayBuffer,
       longTermMemory: this.longTermMemory,
@@ -377,11 +425,19 @@ export class TitanMemoryModel implements IMemoryModel {
         this.valueWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.valueWeights[i])));
         this.attentionFinalOutputWeight.assign(tf.tensor2d(weights.attentionFinalOutputWeight));
         this.hierarchicalMemory.forEach((m, i) => m.assign(tf.tensor1d(weights.hierarchicalMemory[i])));
-        
+
         // Load compression weights if they exist
         if (weights.compressionWeights && weights.compressionBias) {
           this.compressionWeights.assign(tf.tensor2d(weights.compressionWeights));
           this.compressionBias.assign(tf.tensor1d(weights.compressionBias));
+        }
+
+        if (weights.persistentMemory && this.persistentMemory) {
+          this.persistentMemory.assign(tf.tensor1d(weights.persistentMemory));
+        }
+
+        if (weights.momentumMemory && this.momentumMemory) {
+          this.momentumMemory.assign(tf.tensor1d(weights.momentumMemory));
         }
       });
       
@@ -421,7 +477,10 @@ export class TitanMemoryModel implements IMemoryModel {
       compressionRate: this.compressionRate,
       longTermMemorySize: this.longTermMemorySize,
       dynamicAllocation: this.dynamicAllocation,
-      cacheTTL: this.cacheTTL
+      cacheTTL: this.cacheTTL,
+      persistentDim: this.persistentDim,
+      useMomentum: this.useMomentum,
+      variant: this.variant
     };
   }
 
@@ -438,7 +497,9 @@ export class TitanMemoryModel implements IMemoryModel {
       attentionFinalOutputWeight: this.attentionFinalOutputWeight.arraySync(),
       hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync()),
       compressionWeights: this.compressionWeights.arraySync(),
-      compressionBias: this.compressionBias.arraySync()
+      compressionBias: this.compressionBias.arraySync(),
+      persistentMemory: this.persistentMemory ? this.persistentMemory.arraySync() : null,
+      momentumMemory: this.momentumMemory ? this.momentumMemory.arraySync() : null
     };
   }
 
