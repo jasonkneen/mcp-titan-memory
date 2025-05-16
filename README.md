@@ -18,6 +18,9 @@ Currently implemented:
 - Dynamic memory allocation
 - Long-term memory storage
 - Advanced memory compression
+- Persistent task-specific memory
+- Momentum-based memory updates
+- Configurable memory integration variants (MAC/MAG)
 
 ## Usage
 
