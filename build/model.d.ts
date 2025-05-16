@@ -4,6 +4,7 @@ export interface TitanMemoryConfig {
     inputDim?: number;
     hiddenDim?: number;
     outputDim?: number;
+    memoryDim?: number;
     learningRate?: number;
     useManifold?: boolean;
     momentumFactor?: number;
@@ -12,6 +13,12 @@ export interface TitanMemoryConfig {
     tangentEpsilon?: number;
     numHeads?: number;
     numLayers?: number;
+    useMemoryReplay?: boolean;
+    replayBufferSize?: number;
+    compressionRate?: number;
+    longTermMemorySize?: number;
+    dynamicAllocation?: boolean;
+    cacheTTL?: number;
 }
 interface ForwardResult extends tf.TensorContainerObject {
     predicted: ITensor;
@@ -31,6 +38,15 @@ export declare class TitanMemoryModel implements IMemoryModel {
     private tangentEpsilon;
     private numHeads;
     private numLayers;
+    private useMemoryReplay;
+    private replayBufferSize;
+    private compressionRate;
+    private longTermMemorySize;
+    private dynamicAllocation;
+    private cacheTTL;
+    private replayBuffer;
+    private longTermMemory;
+    private llmCache;
     private fullOutputDim;
     private W1;
     private b1;
@@ -41,8 +57,10 @@ export declare class TitanMemoryModel implements IMemoryModel {
     private queryWeights;
     private keyWeights;
     private valueWeights;
-    private attentionOutputWeights;
+    private attentionFinalOutputWeight;
     private hierarchicalMemory;
+    private compressionWeights;
+    private compressionBias;
     constructor(config?: TitanMemoryConfig);
     private multiHeadAttention;
     forward(xTensor: ITensor, memoryState: ITensor): ForwardResult;
@@ -60,11 +78,57 @@ export declare class TitanMemoryModel implements IMemoryModel {
         queryWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
         keyWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
         valueWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
-        attentionOutputWeights: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        attentionFinalOutputWeight: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
         hierarchicalMemory: (number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][])[];
+        compressionWeights: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
+        compressionBias: number | number[] | number[][] | number[][][] | number[][][][] | number[][][][][] | number[][][][][][];
     };
     getLayerMemoryState(layerIndex: number): number[];
     train_sequence(sequence: ITensor[], epochs?: number): number[];
     private zeroVector;
+    /**
+     * Adds a sample to the memory replay buffer
+     */
+    private addToReplayBuffer;
+    /**
+     * Trains the model on a batch from the replay buffer
+     */
+    private trainOnReplayBuffer;
+    /**
+     * Compresses memory using the compression network
+     */
+    private compressMemory;
+    /**
+     * Decompresses memory from compressed representation
+     */
+    private decompressMemory;
+    /**
+     * Stores memory in long-term storage with a key
+     */
+    storeInLongTermMemory(key: string, memory: number[]): void;
+    /**
+     * Retrieves memory from long-term storage by key
+     */
+    retrieveFromLongTermMemory(key: string): number[] | null;
+    /**
+     * Dynamically allocates memory based on surprise level
+     */
+    private allocateMemoryDynamically;
+    /**
+     * Generates a cache key from input vector
+     */
+    private generateCacheKey;
+    /**
+     * Caches a memory state with the given key
+     */
+    private cacheMemoryState;
+    /**
+     * Retrieves a cached memory state by key
+     */
+    retrieveCachedMemory(key: string): number[] | null;
+    /**
+     * Cleans up expired cache entries
+     */
+    private cleanupCache;
 }
 export {};

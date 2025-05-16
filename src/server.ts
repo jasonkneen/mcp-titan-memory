@@ -6,7 +6,8 @@
  * It remains for backward compatibility with existing code references.
  */
 
-import { createMCPServer } from '@modelcontextprotocol/sdk';
+// @ts-ignore
+import { createMCPServer } from '@modelcontextprotocol/sdk/server/index.js';
 
 export class TitanExpressServer {
   private mcpServer: any;

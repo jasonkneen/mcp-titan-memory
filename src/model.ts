@@ -6,6 +6,7 @@ export interface TitanMemoryConfig {
   inputDim?: number;
   hiddenDim?: number;
   outputDim?: number; // We'll treat this as "memoryDim" internally
+  memoryDim?: number; // Explicit memory dimension parameter
   learningRate?: number;
   useManifold?: boolean;
   momentumFactor?: number;
@@ -14,6 +15,12 @@ export interface TitanMemoryConfig {
   tangentEpsilon?: number;
   numHeads?: number; // Number of attention heads
   numLayers?: number; // Number of hierarchical memory layers
+  useMemoryReplay?: boolean; // Enable memory replay for enhanced learning
+  replayBufferSize?: number; // Size of memory replay buffer
+  compressionRate?: number; // Rate for memory compression
+  longTermMemorySize?: number; // Size of long-term memory storage
+  dynamicAllocation?: boolean; // Enable dynamic memory allocation
+  cacheTTL?: number; // Time-to-live for LLM cache entries in milliseconds
 }
 
 interface ForwardResult extends tf.TensorContainerObject {
@@ -35,6 +42,23 @@ export class TitanMemoryModel implements IMemoryModel {
   private tangentEpsilon: number;
   private numHeads: number;
   private numLayers: number;
+  
+  // Advanced memory features
+  private useMemoryReplay: boolean;
+  private replayBufferSize: number;
+  private compressionRate: number;
+  private longTermMemorySize: number;
+  private dynamicAllocation: boolean;
+  private cacheTTL: number;
+  
+  // Memory replay buffer
+  private replayBuffer: Array<{input: number[], memory: number[], target: number[]}>;
+  
+  // Long-term memory storage
+  private longTermMemory: Array<{key: string, value: number[], timestamp: number}>;
+  
+  // LLM Cache
+  private llmCache: Map<string, {value: number[], timestamp: number}>;
 
   // For convenience, total output dimension = memoryDim + inputDim
   private fullOutputDim: number;
@@ -51,10 +75,14 @@ export class TitanMemoryModel implements IMemoryModel {
   private queryWeights: tf.Variable[];
   private keyWeights: tf.Variable[];
   private valueWeights: tf.Variable[];
-  private attentionOutputWeights: tf.Variable[];
+  private attentionFinalOutputWeight: tf.Variable;
 
   // Hierarchical memory
   private hierarchicalMemory: tf.Variable[];
+  
+  // Memory compression parameters
+  private compressionWeights: tf.Variable;
+  private compressionBias: tf.Variable;
 
   constructor(config: TitanMemoryConfig = {}) {
     this.inputDim = config.inputDim || 64;
@@ -73,6 +101,19 @@ export class TitanMemoryModel implements IMemoryModel {
     this.tangentEpsilon = config.tangentEpsilon || 1e-8;
     this.numHeads = config.numHeads || 4;
     this.numLayers = config.numLayers || 3;
+    
+    // Initialize advanced memory features
+    this.useMemoryReplay = config.useMemoryReplay || false;
+    this.replayBufferSize = config.replayBufferSize || 1000;
+    this.compressionRate = config.compressionRate || 0.5;
+    this.longTermMemorySize = config.longTermMemorySize || 10000;
+    this.dynamicAllocation = config.dynamicAllocation || false;
+    this.cacheTTL = config.cacheTTL || 3600000; // Default 1 hour
+    
+    // Initialize memory structures
+    this.replayBuffer = [];
+    this.longTermMemory = [];
+    this.llmCache = new Map();
 
     // Initialize trainable parameters
     // First layer receives inputDim + memoryDim:
@@ -93,28 +134,31 @@ export class TitanMemoryModel implements IMemoryModel {
     this.queryWeights = [];
     this.keyWeights = [];
     this.valueWeights = [];
-    this.attentionOutputWeights = [];
     for (let i = 0; i < this.numHeads; i++) {
       this.queryWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
       this.keyWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
       this.valueWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
-      this.attentionOutputWeights.push(tf.variable(tf.randomNormal([this.memoryDim, this.memoryDim], 0, 0.1)));
     }
+    this.attentionFinalOutputWeight = tf.variable(tf.randomNormal([this.numHeads * this.memoryDim, this.memoryDim], 0, 0.1));
 
     // Initialize hierarchical memory
     this.hierarchicalMemory = [];
     for (let i = 0; i < this.numLayers; i++) {
       this.hierarchicalMemory.push(tf.variable(tf.zeros([this.memoryDim])));
     }
+    
+    // Initialize memory compression parameters
+    this.compressionWeights = tf.variable(tf.randomNormal([Math.floor(this.memoryDim * this.compressionRate), this.memoryDim], 0, 0.1));
+    this.compressionBias = tf.variable(tf.zeros([Math.floor(this.memoryDim * this.compressionRate)]));
   }
 
   private multiHeadAttention(query: tf.Tensor, key: tf.Tensor, value: tf.Tensor): tf.Tensor {
     return tf.tidy(() => {
       const attentionHeads = [];
       for (let i = 0; i < this.numHeads; i++) {
-        const q = tf.matMul(query, this.queryWeights[i]);
-        const k = tf.matMul(key, this.keyWeights[i]);
-        const v = tf.matMul(value, this.valueWeights[i]);
+        const q = tf.matMul(query.reshape([1, -1]), this.queryWeights[i]);
+        const k = tf.matMul(key.reshape([1, -1]), this.keyWeights[i]);
+        const v = tf.matMul(value.reshape([1, -1]), this.valueWeights[i]);
 
         const attentionScores = tf.softmax(tf.matMul(q, k.transpose()).div(tf.scalar(Math.sqrt(this.memoryDim))));
         const attentionOutput = tf.matMul(attentionScores, v);
@@ -123,7 +167,7 @@ export class TitanMemoryModel implements IMemoryModel {
       }
 
       const concatenatedHeads = tf.concat(attentionHeads, -1);
-      const output = tf.matMul(concatenatedHeads, this.attentionOutputWeights[0]);
+      const output = tf.matMul(concatenatedHeads, this.attentionFinalOutputWeight);
 
       return output;
     });
@@ -175,13 +219,31 @@ export class TitanMemoryModel implements IMemoryModel {
       // Hierarchical memory update
       for (let i = 0; i < this.numLayers; i++) {
         const layerMemory = this.hierarchicalMemory[i];
-        const updatedLayerMemory = tf.add(layerMemory, attentionOutput);
+        const updatedLayerMemory = tf.add(layerMemory, attentionOutput.reshape(layerMemory.shape));
         this.hierarchicalMemory[i].assign(updatedLayerMemory);
+      }
+      
+      // Store in replay buffer if memory replay is enabled
+      if (this.useMemoryReplay) {
+        this.addToReplayBuffer(x.flatten().arraySync() as number[], memory.flatten().arraySync() as number[], predicted.flatten().arraySync() as number[]);
+      }
+      
+      // Dynamic memory allocation if enabled
+      let dynamicMemory = newMemory;
+      if (this.dynamicAllocation) {
+        dynamicMemory = this.allocateMemoryDynamically(newMemory, surprise);
+      }
+      
+      // Cache the result if surprise is low (indicating high confidence)
+      const surpriseValue = surprise.dataSync()[0];
+      if (surpriseValue < 0.01) {
+        const cacheKey = this.generateCacheKey(x.flatten().arraySync() as number[]);
+        this.cacheMemoryState(cacheKey, dynamicMemory.flatten().arraySync() as number[]);
       }
 
       return {
         predicted: wrapTensor(predicted),
-        newMemory: wrapTensor(newMemory),
+        newMemory: wrapTensor(dynamicMemory),
         surprise: wrapTensor(surprise)
       };
     });
@@ -255,6 +317,11 @@ export class TitanMemoryModel implements IMemoryModel {
         return totalLoss;
       }, true);
 
+      // If memory replay is enabled, perform replay training
+      if (this.useMemoryReplay && this.replayBuffer.length > 0) {
+        this.trainOnReplayBuffer();
+      }
+
       // If cost is null for some reason, return scalar(0)
       const result = wrapTensor(cost || tf.scalar(0));
 
@@ -273,8 +340,14 @@ export class TitanMemoryModel implements IMemoryModel {
       queryWeights: await Promise.all(this.queryWeights.map(w => w.array())),
       keyWeights: await Promise.all(this.keyWeights.map(w => w.array())),
       valueWeights: await Promise.all(this.valueWeights.map(w => w.array())),
-      attentionOutputWeights: await Promise.all(this.attentionOutputWeights.map(w => w.array())),
-      hierarchicalMemory: await Promise.all(this.hierarchicalMemory.map(m => m.array()))
+      attentionFinalOutputWeight: await this.attentionFinalOutputWeight.array(),
+      hierarchicalMemory: await Promise.all(this.hierarchicalMemory.map(m => m.array())),
+      compressionWeights: await this.compressionWeights.array(),
+      compressionBias: await this.compressionBias.array(),
+      // Save advanced memory structures
+      replayBuffer: this.replayBuffer,
+      longTermMemory: this.longTermMemory,
+      llmCache: Array.from(this.llmCache.entries())
     };
 
     // Use proper path normalization
@@ -302,9 +375,28 @@ export class TitanMemoryModel implements IMemoryModel {
         this.queryWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.queryWeights[i])));
         this.keyWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.keyWeights[i])));
         this.valueWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.valueWeights[i])));
-        this.attentionOutputWeights.forEach((w, i) => w.assign(tf.tensor2d(weights.attentionOutputWeights[i])));
+        this.attentionFinalOutputWeight.assign(tf.tensor2d(weights.attentionFinalOutputWeight));
         this.hierarchicalMemory.forEach((m, i) => m.assign(tf.tensor1d(weights.hierarchicalMemory[i])));
+        
+        // Load compression weights if they exist
+        if (weights.compressionWeights && weights.compressionBias) {
+          this.compressionWeights.assign(tf.tensor2d(weights.compressionWeights));
+          this.compressionBias.assign(tf.tensor1d(weights.compressionBias));
+        }
       });
+      
+      // Load advanced memory structures if they exist
+      if (weights.replayBuffer) {
+        this.replayBuffer = weights.replayBuffer;
+      }
+      
+      if (weights.longTermMemory) {
+        this.longTermMemory = weights.longTermMemory;
+      }
+      
+      if (weights.llmCache) {
+        this.llmCache = new Map(weights.llmCache);
+      }
     } catch (error) {
       throw new Error(`Failed to load model from ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -323,7 +415,13 @@ export class TitanMemoryModel implements IMemoryModel {
       maxStepSize: this.maxStepSize,
       tangentEpsilon: this.tangentEpsilon,
       numHeads: this.numHeads,
-      numLayers: this.numLayers
+      numLayers: this.numLayers,
+      useMemoryReplay: this.useMemoryReplay,
+      replayBufferSize: this.replayBufferSize,
+      compressionRate: this.compressionRate,
+      longTermMemorySize: this.longTermMemorySize,
+      dynamicAllocation: this.dynamicAllocation,
+      cacheTTL: this.cacheTTL
     };
   }
 
@@ -337,8 +435,10 @@ export class TitanMemoryModel implements IMemoryModel {
       queryWeights: this.queryWeights.map(w => w.arraySync()),
       keyWeights: this.keyWeights.map(w => w.arraySync()),
       valueWeights: this.valueWeights.map(w => w.arraySync()),
-      attentionOutputWeights: this.attentionOutputWeights.map(w => w.arraySync()),
-      hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync())
+      attentionFinalOutputWeight: this.attentionFinalOutputWeight.arraySync(),
+      hierarchicalMemory: this.hierarchicalMemory.map(m => m.arraySync()),
+      compressionWeights: this.compressionWeights.arraySync(),
+      compressionBias: this.compressionBias.arraySync()
     };
   }
 
@@ -400,5 +500,222 @@ export class TitanMemoryModel implements IMemoryModel {
   private zeroVector(dim: number | undefined): ITensor {
     const dimension = dim || this.memoryDim;  // Default to memoryDim if dim is undefined
     return wrapTensor(tf.zeros([dimension]));
+  }
+  
+  /**
+   * Adds a sample to the memory replay buffer
+   */
+  private addToReplayBuffer(input: number[], memory: number[], target: number[]): void {
+    // Add to replay buffer
+    this.replayBuffer.push({ input, memory, target });
+    
+    // Ensure buffer doesn't exceed maximum size
+    if (this.replayBuffer.length > this.replayBufferSize) {
+      this.replayBuffer.shift(); // Remove oldest sample
+    }
+  }
+  
+  /**
+   * Trains the model on a batch from the replay buffer
+   */
+  private trainOnReplayBuffer(): void {
+    if (this.replayBuffer.length === 0) return;
+    
+    // Sample a batch from the replay buffer
+    const batchSize = Math.min(16, this.replayBuffer.length);
+    const indices: number[] = [];
+    
+    // Random sampling without replacement
+    for (let i = 0; i < batchSize; i++) {
+      const idx = Math.floor(Math.random() * this.replayBuffer.length);
+      indices.push(idx);
+    }
+    
+    // Train on each sample in the batch
+    tf.tidy(() => {
+      for (const idx of indices) {
+        const sample = this.replayBuffer[idx];
+        const x_t = wrapTensor(tf.tensor1d(sample.input));
+        const x_next = wrapTensor(tf.tensor1d(sample.target));
+        const memory = wrapTensor(tf.tensor1d(sample.memory));
+        
+        // Train step on this sample
+        const cost = this.optimizer.minimize(() => {
+          const { predicted } = this.forward(x_t, memory);
+          
+          // MSE loss
+          const diff = tf.sub(unwrapTensor(predicted), unwrapTensor(x_next));
+          const mse = tf.mean(tf.square(diff)).asScalar();
+          
+          // Clean up
+          predicted.dispose();
+          diff.dispose();
+          
+          return mse;
+        }, true);
+        
+        // Clean up
+        x_t.dispose();
+        x_next.dispose();
+        memory.dispose();
+        if (cost) cost.dispose();
+      }
+    });
+  }
+  
+  /**
+   * Compresses memory using the compression network
+   */
+  private compressMemory(memory: tf.Tensor): tf.Tensor {
+    return tf.tidy(() => {
+      // Apply compression
+      const compressed = tf.add(
+        tf.matMul(memory.reshape([1, this.memoryDim]), this.compressionWeights.transpose()),
+        this.compressionBias
+      ).tanh().reshape([Math.floor(this.memoryDim * this.compressionRate)]);
+      
+      return compressed;
+    });
+  }
+  
+  /**
+   * Decompresses memory from compressed representation
+   */
+  private decompressMemory(compressed: tf.Tensor): tf.Tensor {
+    return tf.tidy(() => {
+      // Apply decompression (approximate inverse)
+      const decompressed = tf.matMul(
+        compressed.reshape([1, Math.floor(this.memoryDim * this.compressionRate)]),
+        this.compressionWeights
+      ).reshape([this.memoryDim]);
+      
+      return decompressed;
+    });
+  }
+  
+  /**
+   * Stores memory in long-term storage with a key
+   */
+  public storeInLongTermMemory(key: string, memory: number[]): void {
+    // Add to long-term memory
+    this.longTermMemory.push({
+      key,
+      value: memory,
+      timestamp: Date.now()
+    });
+    
+    // Ensure long-term memory doesn't exceed maximum size
+    if (this.longTermMemory.length > this.longTermMemorySize) {
+      // Remove oldest entry
+      this.longTermMemory.sort((a, b) => a.timestamp - b.timestamp);
+      this.longTermMemory.shift();
+    }
+  }
+  
+  /**
+   * Retrieves memory from long-term storage by key
+   */
+  public retrieveFromLongTermMemory(key: string): number[] | null {
+    const entry = this.longTermMemory.find(item => item.key === key);
+    if (!entry) return null;
+    
+    // Update timestamp to indicate recent use
+    entry.timestamp = Date.now();
+    return entry.value;
+  }
+  
+  /**
+   * Dynamically allocates memory based on surprise level
+   */
+  private allocateMemoryDynamically(memory: tf.Tensor, surprise: tf.Tensor): tf.Tensor {
+    return tf.tidy(() => {
+      const surpriseValue = surprise.dataSync()[0];
+      
+      // If surprise is high, allocate more memory capacity
+      if (surpriseValue > 0.5) {
+        // Enhance memory representation based on surprise level
+        const enhancementFactor = tf.scalar(Math.min(1.0 + surpriseValue, 2.0));
+        const enhancedMemory = tf.mul(memory, enhancementFactor);
+        return enhancedMemory;
+      }
+      
+      // If surprise is low, consider compressing the memory
+      if (surpriseValue < 0.1) {
+        // Compress and then decompress to save memory while preserving information
+        const compressed = this.compressMemory(memory);
+        const decompressed = this.decompressMemory(compressed);
+        return decompressed;
+      }
+      
+      // Otherwise, return the original memory
+      return memory.clone();
+    });
+  }
+  
+  /**
+   * Generates a cache key from input vector
+   */
+  private generateCacheKey(input: number[]): string {
+    // Simple hashing function for array of numbers
+    return input.map(x => Math.round(x * 100) / 100).join('|');
+  }
+  
+  /**
+   * Caches a memory state with the given key
+   */
+  private cacheMemoryState(key: string, memory: number[]): void {
+    // Store in cache with current timestamp
+    this.llmCache.set(key, {
+      value: memory,
+      timestamp: Date.now()
+    });
+    
+    // Clean up expired cache entries
+    this.cleanupCache();
+  }
+  
+  /**
+   * Retrieves a cached memory state by key
+   */
+  public retrieveCachedMemory(key: string): number[] | null {
+    if (!this.llmCache.has(key)) return null;
+    
+    const entry = this.llmCache.get(key)!;
+    
+    // Check if entry has expired
+    if (Date.now() - entry.timestamp > this.cacheTTL) {
+      this.llmCache.delete(key);
+      return null;
+    }
+    
+    // Update timestamp to indicate recent use
+    entry.timestamp = Date.now();
+    return entry.value;
+  }
+  
+  /**
+   * Cleans up expired cache entries
+   */
+  private cleanupCache(): void {
+    const now = Date.now();
+    
+    // Remove expired entries
+    for (const [key, entry] of this.llmCache.entries()) {
+      if (now - entry.timestamp > this.cacheTTL) {
+        this.llmCache.delete(key);
+      }
+    }
+    
+    // If cache is still too large, remove oldest entries
+    if (this.llmCache.size > 1000) {
+      const entries = Array.from(this.llmCache.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp);
+      
+      // Remove oldest 20% of entries
+      const toRemove = Math.floor(entries.length * 0.2);
+      for (let i = 0; i < toRemove; i++) {
+        this.llmCache.delete(entries[i][0]);
+      }
+    }
   }
 }

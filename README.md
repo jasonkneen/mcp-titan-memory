@@ -10,16 +10,12 @@ This project implements a memory model for large language models (LLMs) that is 
 
 Currently implemented:
 - Multi-head attention mechanism
-- Basic hierarchical memory structure
+- Hierarchical memory structure
 - Memory state persistence
 - Integration with Model Context Protocol (MCP)
-
-In development:
 - Memory replay for enhanced learning
 - LLM Cache integration
 - Dynamic memory allocation
-
-Planned features:
 - Long-term memory storage
 - Advanced memory compression
 
@@ -36,6 +32,8 @@ The server exposes several tools via the Model Context Protocol (MCP):
 - `get_status`: Get the current status of the model
 - `store_memory_state`: Store the current memory state with a key
 - `retrieve_memory_state`: Retrieve a stored memory state
+- `compress_memory`: Compress the current memory state to save space
+- `memory_replay`: Perform memory replay training to enhance learning
 
 ## Installation
 
@@ -64,17 +62,34 @@ npm run watch
 npm test
 ```
 
+## Advanced Features
+
+### Memory Replay
+The memory replay mechanism stores past input-output pairs and periodically retrains on them to reinforce learning. This helps prevent catastrophic forgetting and improves overall model performance.
+
+### Dynamic Memory Allocation
+The model can dynamically adjust memory allocation based on the complexity of the input and the surprise level (prediction error). This allows it to allocate more resources to complex patterns and compress simpler ones.
+
+### Long-term Memory Storage
+The system maintains a persistent long-term memory that survives across sessions. This memory is stored on disk and loaded when the server starts, allowing for continuity in learning.
+
+### Memory Compression
+Advanced compression techniques reduce the memory footprint while preserving important information. This is particularly useful for deployment in resource-constrained environments.
+
+### LLM Cache Integration
+The system maintains a cache of frequently accessed memory states, improving performance for repeated queries and reducing computational overhead.
+
 ## Citation
 
 If you use this implementation in your research, please cite:
 
 ```
 @misc{titanmemory2023,
-  author = {Replit Team},
+  author = {Titan Memory Team},
   title = {Titan Memory: Enhanced Memory Framework for Language Models},
   year = {2023},
   publisher = {GitHub},
-  url = {https://github.com/replit/titan-memory}
+  url = {https://github.com/titan-memory/titan-cognitive-memory-framework}
 }
 ```
 

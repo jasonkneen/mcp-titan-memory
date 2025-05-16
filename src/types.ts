@@ -107,4 +107,10 @@ export interface TitanMemoryConfig {
   numLayers?: number;
   momentumFactor?: number;
   forgetGateInit?: number;
+  useMemoryReplay?: boolean; // Enable memory replay for enhanced learning
+  replayBufferSize?: number; // Size of memory replay buffer
+  compressionRate?: number; // Rate for memory compression
+  longTermMemorySize?: number; // Size of long-term memory storage
+  dynamicAllocation?: boolean; // Enable dynamic memory allocation
+  cacheTTL?: number; // Time-to-live for LLM cache entries in milliseconds
 }
